@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jopa"
+version = "0.1.0"
+description = "JOPA: Joint Observation-Planning Architecture — message passing for learning and control in JAX"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "flax>=0.8",
+    "optax>=0.2",
+    "numpy>=1.24",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+viz = ["matplotlib>=3.8"]
+
+[tool.setuptools.packages.find]
+include = ["jopa*"]

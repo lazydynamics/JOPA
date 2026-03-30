@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.claude/
+dist/
+build/
+.marimo/
+__marimo__/
+
+# Generated outputs and model weights
+outputs/*.png
+outputs/*.gif
+outputs/*.mp4
+checkpoints/*.npz
+checkpoints/*.pkl
+.DS_Store
+docs/index.html
