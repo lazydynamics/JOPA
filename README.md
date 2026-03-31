@@ -8,16 +8,6 @@ Or: Poor Man's Active Inference via message passing.
 
 Closed-loop control from pixels with unknown dynamics and unknown observations. Dynamics learned via message passing, observation model via gradient descent. Takes raw images and control inputs, learns a latent dynamical system via Bayesian inference, and plans actions by running inference on the same factor graph. No reward functions, no policy networks, no replay buffers.
 
-The pendulum demo learns a dynamics model from random exploration and plans and executes a swing-up to a target angle in closed loop — all from 28×28 pixel observations.
-
-### Digit rotation — observe, then predict
-
-![Digits](docs/digits_result.png)
-
-### Pendulum swing-up — plan via message passing
-
-![Pendulum](docs/pendulum_result.png)
-
 > **How this was built.** This codebase was largely written by [Claude Code](https://claude.ai/code). The only component Claude couldn't derive was the message-passing rules for the Continuous Transition node — those were provided as hand-derived VMP update equations. Everything else — the inference engine, Variational EM loop, planner, VAE integration, and the examples — was assembled by Claude from a description of the generative model and the factor graph structure.
 >
 > **Note on tests.** The inference diagnostic test suite has been removed from this release as it relies on internal tooling that cannot be open-sourced yet.
@@ -76,6 +66,8 @@ Once the model is learned, planning becomes inference on the same factor graph:
 
 A receding-horizon loop re-observes the actual state after executing a few steps, replans, and repeats — giving closed-loop control from pixels.
 
+![Pendulum swing-up](docs/pendulum_result.png)
+
 ## Known limitations
 
 - **VAE pre-training is not message passing.** The observation model is initialised with standard gradient descent. The Variational EM refines it further, but the initial representation is deep learning, not Bayesian inference.
@@ -97,6 +89,8 @@ uv run marimo run notebook.py
 Sliders let you scrub through VAE training, EM convergence, and planning execution step by step. Auto-playing GIFs show each phase in motion. A dropdown lets you switch between pre-computed targets (θ=0.5, θ=1.0, θ=π).
 
 ## Examples
+
+![Digit rotation](docs/digits_result.png)
 
 | Example | What it does |
 |---------|-------------|
