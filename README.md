@@ -1,4 +1,4 @@
-# JOPA
+# 🍑 JOPA
 
 **Joint Observation-Planning Architecture** — the same factor graph for learning and planning.
 
@@ -9,6 +9,14 @@ Or: Poor Man's Active Inference via message passing.
 Closed-loop control from pixels with unknown dynamics and unknown observations. Dynamics learned via message passing, observation model via gradient descent. Takes raw images and control inputs, learns a latent dynamical system via Bayesian inference, and plans actions by running inference on the same factor graph. No reward functions, no policy networks, no replay buffers.
 
 The pendulum demo learns a dynamics model from random exploration and plans and executes a swing-up to a target angle in closed loop — all from 28×28 pixel observations.
+
+### Digit rotation — observe, then predict
+
+![Digits](docs/digits_result.png)
+
+### Pendulum swing-up — plan via message passing
+
+![Pendulum](docs/pendulum_result.png)
 
 > **How this was built.** This codebase was largely written by [Claude Code](https://claude.ai/code). The only component Claude couldn't derive was the message-passing rules for the Continuous Transition node — those were provided as hand-derived VMP update equations. Everything else — the inference engine, Variational EM loop, planner, VAE integration, and the examples — was assembled by Claude from a description of the generative model and the factor graph structure.
 >
