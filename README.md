@@ -86,7 +86,7 @@ The full story — learning to see, learning physics, planning a swing-up — as
 uv run marimo run notebook.py
 ```
 
-Sliders let you scrub through VAE training, EM convergence, and planning execution step by step. Auto-playing GIFs show each phase in motion. A dropdown lets you switch between pre-computed targets (θ=0.5, θ=1.0, θ=π).
+Sliders let you scrub through VAE training, EM convergence, and planning execution step by step. Auto-playing GIFs show each phase in motion.
 
 ## Examples
 
