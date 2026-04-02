@@ -4,6 +4,16 @@
 
 Or: Poor Man's Active Inference via message passing.
 
+<p align="center">
+  <img src="docs/demo.gif" width="80%" />
+</p>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2603.20927">Active Inference (de Vries, 2026)</a> &nbsp;·&nbsp;
+  <a href="https://doi.org/10.3390/e23070807">VMP in Factor Graphs (Şenöz et al., 2021)</a> &nbsp;·&nbsp;
+  <a href="https://lazydynamics.com">Lazy Dynamics</a>
+</p>
+
 ---
 
 Closed-loop control from pixels with unknown dynamics and unknown observations. Dynamics learned via message passing, observation model via gradient descent. Takes raw images and control inputs, learns a latent dynamical system via Bayesian inference, and plans actions by running inference on the same factor graph. No reward functions, no policy networks, no replay buffers.
