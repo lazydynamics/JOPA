@@ -258,13 +258,11 @@ def ffg_display(draw_ffg, ffg_phase, mo, plt):
 @app.cell
 def config():
     latent_dim = 4
-    ACTION_SCALE = 15.0
-    transform_fn = lambda a: a.reshape(latent_dim, latent_dim)
-    return ACTION_SCALE, latent_dim, transform_fn
+    return (latent_dim,)
 
 
 @app.cell
-def generate_data(ACTION_SCALE, SimplePendulum, jnp, np):
+def generate_data(SimplePendulum, jnp, np):
     env = SimplePendulum()
     _n_traj = 10
     _traj_len = 80
@@ -277,7 +275,7 @@ def generate_data(ACTION_SCALE, SimplePendulum, jnp, np):
         _acts = []
         for _t in range(_traj_len - 1):
             _torque = _rng.choice([-4.0, -2.0, 0.0, 2.0, 4.0]) + _rng.randn() * 0.5
-            _acts.append(jnp.array([_torque / ACTION_SCALE]))
+            _acts.append(jnp.array([_torque]))
             env.step(_torque)
             _obs.append(jnp.array(env.render()))
         trajectories.append({"observations": _obs, "actions": _acts})
@@ -504,7 +502,6 @@ def sysid_cell(
     np,
     params,
     trajectories,
-    transform_fn,
     variational_em,
 ):
     import pickle as _pickle
@@ -515,7 +512,7 @@ def sysid_cell(
     sample_pairs = [(jnp.array(_traj0_obs[i]), jnp.array(_traj0_obs[i + 1])) for i in _sample_indices]
     sample_actions = [_traj0_acts[i] for i in _sample_indices]
 
-    _cache_path = "checkpoints/em_result.pkl"
+    _cache_path = "checkpoints/em_result_raw_torque.pkl"
     _vec_I = jnp.eye(latent_dim).ravel()
 
     # Try loading cached EM result
@@ -546,7 +543,7 @@ def sysid_cell(
 
         result = variational_em(
             model=model, params=params, trajectories=trajectories,
-            transform_fn=transform_fn, latent_dim=latent_dim, action_dim=1,
+            latent_dim=latent_dim, action_dim=1,
             n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
             beta_recon=1.0, prior_a_mean=_vec_I, prior_a_cov=0.5, init_a_cov=0.5,
             prior_b_cov=10.0, init_b_cov=100.0, seed=42,
@@ -722,8 +719,8 @@ Same `ct_marginal_yx` that produces messages for learning A, B, W now produces m
 
 @app.cell
 def run_all_plans(
-    ACTION_SCALE, SimplePendulum, jnp, latent_dim, make_encode_decode,
-    model, np, params_em, plan, result, transform_fn,
+    SimplePendulum, jnp, latent_dim, make_encode_decode,
+    model, np, params_em, plan, result,
 ):
     """Pre-compute planning results for three target angles."""
     _encode_fn, _decode_fn = make_encode_decode(model, params_em)
@@ -752,12 +749,11 @@ def run_all_plans(
                 observations=_obs_plan,
                 encode_fn=_encode_fn, decode_fn=_decode_fn,
                 q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
-                transform_fn=transform_fn,
                 latent_dim=latent_dim, action_dim=1,
-                n_iterations=200, prior_u_cov=10.0, verbose=False,
+                n_iterations=200, verbose=False,
             )
             for _i in range(min(_tgt["exec_steps"], len(_pr.actions))):
-                _t = float(_pr.actions[_i][0]) * ACTION_SCALE
+                _t = float(_pr.actions[_i][0])
                 _torques.append(_t)
                 _env.step(_t)
                 _states.append(_env.state.copy())

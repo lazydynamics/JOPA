@@ -10,11 +10,15 @@ from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 import jax.numpy as jnp
+from tqdm import tqdm
 
 from .distributions import (
     Gaussian, Wishart,
     combine_gaussians, gaussian_mean, gaussian_mean_cov, gaussian_prior,
     vague_gaussian, wishart_mean,
+)
+from .defaults import (
+    PRIOR_W_DF, PRIOR_A_COV, PRIOR_B_COV, INIT_A_COV, INIT_B_COV,
 )
 from .nodes.transition import (
     CTMeta, CTCache,
@@ -53,19 +57,19 @@ def infer(
     observations: Sequence[jnp.ndarray | None],
     encode_fn: Callable,
     decode_fn: Callable,
-    transform_fn: Callable,
     latent_dim: int,
     *,
+    transform_fn: Callable | None = None,
     actions: Sequence[jnp.ndarray] | None = None,
     action_dim: int | None = None,
     n_predict: int = 0,
     predict_actions: Sequence[jnp.ndarray] | None = None,
     n_iterations: int = 50,
-    prior_W_df: float = 4.0,
-    prior_a_cov: float = 1.0,
-    prior_b_cov: float = 1.0,
-    init_a_cov: float = 100.0,
-    init_b_cov: float = 100.0,
+    prior_W_df: float = PRIOR_W_DF,
+    prior_a_cov: float = PRIOR_A_COV,
+    prior_b_cov: float = PRIOR_B_COV,
+    init_a_cov: float = INIT_A_COV,
+    init_b_cov: float = INIT_B_COV,
     init_a_mean: jnp.ndarray | None = None,
     prior_a_mean: jnp.ndarray | None = None,
     verbose: bool = True,
@@ -104,6 +108,8 @@ def infer(
     da = d * d
     T_obs = len(observations)
     T = T_obs + n_predict
+    if transform_fn is None:
+        transform_fn = lambda a: a.reshape(d, d)
     meta = CTMeta(transform_fn)
 
     has_control = actions is not None
@@ -132,9 +138,8 @@ def infer(
     obs_actions = list(actions) if has_control else None
 
     # --- VMP loop (observed portion only) ----------------------------------
-    from tqdm import tqdm
     pbar = tqdm(range(n_iterations), desc="VMP", disable=not verbose)
-    for it in pbar:
+    for _ in pbar:
         cache = CTCache(q_a, q_W, meta, q_b)
         alphas, betas, m_xs, m_ys = forward_backward(
             prior_x, vae_msgs, cache, obs_actions)
@@ -210,12 +215,11 @@ def plan(
     q_a: Gaussian,
     q_W: Wishart,
     q_b: Gaussian,
-    transform_fn: Callable,
     latent_dim: int,
     action_dim: int,
     *,
+    transform_fn: Callable | None = None,
     n_iterations: int = 50,
-    prior_u_cov: float = 1.0,
     verbose: bool = True,
 ) -> PlanResult:
     """Infer actions by conditioning on observed images (start + goal).
@@ -230,11 +234,25 @@ def plan(
         Images at each time step. None = no observation (action is free).
         Typically: [start_image, None, ..., None, goal_image].
     q_a, q_W, q_b : learned model parameters (fixed).
-    prior_u_cov : prior variance on each action component.
+
+    Notes
+    -----
+    The prior on actions is derived from the task itself, with no tunable
+    parameter. For each action component i:
+
+        var(u_i) = ‖μ_goal − μ_start‖² / |B_col_i|²
+
+    Reads as: "a priori, a single action can produce a latent shift up to
+    the task's total start→goal distance." Permissive — the dynamics
+    likelihood selects the actual action magnitudes within this envelope.
+    Scale-invariant in u (|B|² absorbs units) and in latent space (uses
+    observed distance, not an arbitrary radius).
     """
     d = latent_dim
     du = action_dim
     T = len(observations)
+    if transform_fn is None:
+        transform_fn = lambda a: a.reshape(d, d)
     meta = CTMeta(transform_fn)
     n_ct = T - 1
 
@@ -242,14 +260,31 @@ def plan(
 
     cache = CTCache(q_a, q_W, meta, q_b)
     prior_x = Gaussian(eta=jnp.zeros(d), lam=jnp.eye(d))
-    prior_u = gaussian_prior(du, prior_u_cov)
+
+    # Action prior derived from the observed start→goal latent shift —
+    # see docstring. Uses the first and last *observed* timesteps as
+    # anchors; falls back to identity-scale prior on B·u if fewer than
+    # two observations are provided.
+    mB = gaussian_mean(q_b).reshape(d, du)
+    b_col_var = jnp.sum(mB ** 2, axis=0) + 1e-8
+
+    present = [i for i, o in enumerate(observations) if o is not None]
+    if len(present) >= 2:
+        mu_start = gaussian_mean(vae_msgs[present[0]])
+        mu_end = gaussian_mean(vae_msgs[present[-1]])
+        latent_shift_sq = jnp.sum((mu_end - mu_start) ** 2)
+        latent_shift_sq = jnp.maximum(latent_shift_sq, 1e-8)
+    else:
+        latent_shift_sq = jnp.array(1.0)
+
+    prior_u_lam = jnp.diag(b_col_var / latent_shift_sq)
+    prior_u = Gaussian(eta=jnp.zeros(du), lam=prior_u_lam)
 
     # Initialise action posteriors at the prior
-    q_us = [gaussian_prior(du, prior_u_cov) for _ in range(n_ct)]
+    q_us = [prior_u for _ in range(n_ct)]
 
-    from tqdm import tqdm
     pbar = tqdm(range(n_iterations), desc="Plan", disable=not verbose)
-    for it in pbar:
+    for _ in pbar:
         u_means = [gaussian_mean(qu) for qu in q_us]
 
         # BP: forward-backward with current action means

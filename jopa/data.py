@@ -100,25 +100,19 @@ def make_controlled_sequence(
     digit_idx: int = 0,
     n_frames: int = 100,
     binarize: bool = True,
+    threshold: float = 0.5,
     seed: int = 0,
-    action_scale: float = 1.0,
 ):
     """Generate a rotation sequence driven entirely by control actions.
 
-    The action u[t] is the angular displacement in normalised units.
-    The digit angle is the cumulative sum of actions, so there is no
-    autonomous rotation — all motion comes from the control input.
-
-    Parameters
-    ----------
-    action_scale : float
-        Degrees per unit of action.  Default 1.0 means u=1 → 1° rotation.
+    Each action u[t] is an angular velocity in degrees per step. The digit
+    angle is the cumulative sum of u[t]; there is no autonomous rotation.
 
     Returns
     -------
     frames : list of (28, 28) float32 arrays
-    actions : list of (1,) float32 arrays
-    angles : (n_frames,) float64 array of cumulative angles
+    actions : list of (1,) float32 arrays — angular velocities (deg/step)
+    angles : (n_frames,) float64 array of cumulative angles in degrees
     """
     rng = np.random.RandomState(seed)
     imgs, _ = load_mnist()
@@ -126,7 +120,7 @@ def make_controlled_sequence(
 
     n_trans = n_frames - 1
 
-    # Piecewise constant actions with distinct regimes
+    # Piecewise constant velocities (deg/step) with distinct regimes
     segment_len = n_trans // 5
     raw_speeds = [5.0, -3.0, 8.0, 0.0, -5.0]
     velocities = np.zeros(n_trans)
@@ -135,20 +129,15 @@ def make_controlled_sequence(
         end = min(start + segment_len, n_trans)
         velocities[start:end] = speed + rng.randn(end - start) * 0.3
 
-    # Normalise: actions have zero-ish mean and moderate magnitude
-    # so they're in a scale compatible with the latent space
-    velocities = velocities / action_scale
-
-    # Angles in degrees (for rendering)
     angle_deg = np.zeros(n_frames)
     for i in range(1, n_frames):
-        angle_deg[i] = angle_deg[i - 1] + velocities[i - 1] * action_scale
+        angle_deg[i] = angle_deg[i - 1] + velocities[i - 1]
 
     frames = []
     for angle in angle_deg:
         rot = rotate_image(img, angle)
         if binarize:
-            rot = (rot > 0.5 * rot.max()).astype(np.float32) if rot.max() > 0 else rot
+            rot = (rot > threshold * rot.max()).astype(np.float32) if rot.max() > 0 else rot
         frames.append(rot.astype(np.float32))
 
     actions = [np.array([v], dtype=np.float32) for v in velocities]

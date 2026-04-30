@@ -18,9 +18,7 @@ CHECKPOINTS = os.path.join(ROOT, "checkpoints")
 os.makedirs(CHECKPOINTS, exist_ok=True)
 
 latent_dim = 4
-ACTION_SCALE = 15.0
 env = SimplePendulum()
-transform_fn = lambda a: a.reshape(latent_dim, latent_dim)
 
 # ── 1. Generate training trajectories ──────────────────────────────────────
 print("Generating training trajectories …")
@@ -35,7 +33,7 @@ for ep in range(n_trajectories):
     acts = []
     for t in range(traj_len - 1):
         torque = rng.choice([-4.0, -2.0, 0.0, 2.0, 4.0]) + rng.randn() * 0.5
-        acts.append(jnp.array([torque / ACTION_SCALE]))
+        acts.append(jnp.array([torque]))
         env.step(torque)
         obs.append(jnp.array(env.render()))
     trajectories.append({"observations": obs, "actions": acts})
@@ -69,7 +67,7 @@ vec_I = jnp.eye(latent_dim).ravel()
 
 result = variational_em(
     model=model, params=params, trajectories=trajectories,
-    transform_fn=transform_fn, latent_dim=latent_dim, action_dim=1,
+    latent_dim=latent_dim, action_dim=1,
     n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
     beta_recon=1.0, prior_a_mean=vec_I, prior_a_cov=0.5, init_a_cov=0.5,
     prior_b_cov=10.0, init_b_cov=100.0, seed=42,
@@ -121,14 +119,13 @@ for cycle in range(N_replan):
         observations=observations,
         encode_fn=encode_fn, decode_fn=decode_fn,
         q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
-        transform_fn=transform_fn,
         latent_dim=latent_dim, action_dim=1,
-        n_iterations=200, prior_u_cov=10.0, verbose=False,
+        n_iterations=200, verbose=False,
     )
 
     # ── Act ──
     for i in range(min(exec_steps, len(plan_result.actions))):
-        torque = float(plan_result.actions[i][0]) * ACTION_SCALE
+        torque = float(plan_result.actions[i][0])
         env.step(torque)
 
     theta_now = env.state[0]

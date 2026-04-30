@@ -65,7 +65,6 @@ result = infer(
     observations=sequence,
     encode_fn=encode_fn,
     decode_fn=decode_fn,
-    transform_fn=lambda a: a.reshape(4, 4),
     latent_dim=4,
     n_predict=n_predicted,
     n_iterations=50,

@@ -17,18 +17,22 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from tqdm import tqdm
 
 from .distributions import (
     Gaussian, Wishart,
     gaussian_mean, gaussian_mean_cov, gaussian_prior,
     wishart_mean,
 )
+from .defaults import (
+    PRIOR_W_DF, PRIOR_A_COV, PRIOR_B_COV, INIT_A_COV, INIT_B_COV,
+)
 from .nodes.transition import CTMeta, CTCache
 from .message_passing import (
     encode_observations, forward_backward,
     accumulate_vmp_messages, compute_marginals,
 )
-from .nn.vae import make_encode_decode
+from .nn.vae import make_encode_decode, LOG_STD_CLIP, PROB_CLIP
 
 
 # ---------------------------------------------------------------------------
@@ -54,12 +58,12 @@ def _kl_diag_vs_full(mu1, log_std1, mu2, cov2):
 def _m_step_loss(params, model, images, posterior_means, posterior_covs, z_rng, beta_recon):
     batch_size = images.shape[0]
     mu_enc, log_std_enc = model.apply(params, images, method=model.encode)
-    log_std_enc = jnp.clip(log_std_enc, -6.0, 2.0)
+    log_std_enc = jnp.clip(log_std_enc, *LOG_STD_CLIP)
     eps = jax.random.normal(z_rng, mu_enc.shape)
     z = mu_enc + jnp.exp(log_std_enc) * eps
     recon = model.apply(params, z, method=model.decode)
     flat = images.reshape(batch_size, -1)
-    p = jnp.clip(recon, 1e-6, 1 - 1e-6)
+    p = jnp.clip(recon, *PROB_CLIP)
     bce = -jnp.sum(flat * jnp.log(p) + (1 - flat) * jnp.log(1 - p), axis=-1)
     kl = jax.vmap(_kl_diag_vs_full)(mu_enc, log_std_enc, posterior_means, posterior_covs)
     return jnp.mean(beta_recon * bce + kl)
@@ -127,21 +131,21 @@ def variational_em(
     model,
     params: dict,
     trajectories: Sequence[dict],
-    transform_fn: Callable,
     latent_dim: int,
     *,
+    transform_fn: Callable | None = None,
     action_dim: int | None = None,
     n_em_iterations: int = 20,
     n_vmp_iterations: int = 20,
     n_m_steps: int = 10,
     lr: float = 1e-4,
     beta_recon: float = 1.0,
-    prior_W_df: float = 4.0,
-    prior_a_cov: float = 1.0,
+    prior_W_df: float = PRIOR_W_DF,
+    prior_a_cov: float = PRIOR_A_COV,
     prior_a_mean: jnp.ndarray | None = None,
-    init_a_cov: float = 100.0,
-    prior_b_cov: float = 1.0,
-    init_b_cov: float = 100.0,
+    init_a_cov: float = INIT_A_COV,
+    prior_b_cov: float = PRIOR_B_COV,
+    init_b_cov: float = INIT_B_COV,
     seed: int = 0,
     verbose: bool = True,
     callback: Callable | None = None,
@@ -163,6 +167,8 @@ def variational_em(
     da = d * d
     has_control = action_dim is not None
     rng = jax.random.PRNGKey(seed)
+    if transform_fn is None:
+        transform_fn = lambda a: a.reshape(d, d)
     meta = CTMeta(transform_fn)
 
     # Priors
@@ -196,7 +202,6 @@ def variational_em(
         params_new = optax.apply_updates(params, updates)
         return params_new, opt_state_new, loss
 
-    from tqdm import tqdm
     pbar = tqdm(range(1, n_em_iterations + 1), desc="EM", disable=not verbose)
     for em_it in pbar:
         # --- E-step: run inference on each trajectory ---

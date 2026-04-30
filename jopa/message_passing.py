@@ -11,7 +11,6 @@ from .distributions import (
     combine_gaussians, vague_gaussian,
 )
 from .nodes.transition import (
-    CTCache,
     ct_forward, ct_backward, ct_marginal_yx,
     ct_message_a, ct_message_b, ct_message_W,
 )
@@ -91,14 +90,14 @@ def accumulate_vmp_messages(m_xs, m_ys, cache, actions,
     Returns updated posteriors (q_a, q_W, q_b).
     """
     n_ct = len(m_xs)
-    acc_a_eta = prior_a.eta.copy()
-    acc_a_lam = prior_a.lam.copy()
-    acc_W_inv = prior_W.inv_scale.copy()
+    acc_a_eta = prior_a.eta
+    acc_a_lam = prior_a.lam
+    acc_W_inv = prior_W.inv_scale
 
     has_control = prior_b is not None
     if has_control:
-        acc_b_eta = prior_b.eta.copy()
-        acc_b_lam = prior_b.lam.copy()
+        acc_b_eta = prior_b.eta
+        acc_b_lam = prior_b.lam
 
     for k in range(n_ct):
         u_k = actions[k] if actions is not None else None

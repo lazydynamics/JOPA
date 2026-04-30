@@ -8,6 +8,12 @@ import jax.numpy as jnp
 import flax.linen as nn
 import optax
 import numpy as np
+from tqdm import tqdm
+
+
+# Numerical guards used by both the VAE ELBO and the Variational-EM M-step.
+LOG_STD_CLIP = (-6.0, 2.0)         # encoder output stability
+PROB_CLIP = (1e-6, 1.0 - 1e-6)      # decoder Bernoulli probabilities
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +84,9 @@ class VAE(nn.Module):
 
 def _elbo_loss(params, model, batch, z_rng, beta):
     recon, mu, log_std = model.apply(params, batch, z_rng)
-    log_std = jnp.clip(log_std, -6.0, 2.0)
+    log_std = jnp.clip(log_std, *LOG_STD_CLIP)
     flat = batch.reshape(batch.shape[0], -1)
-    p = jnp.clip(recon, 1e-6, 1 - 1e-6)
+    p = jnp.clip(recon, *PROB_CLIP)
     bce = -jnp.sum(flat * jnp.log(p) + (1 - flat) * jnp.log(1 - p), axis=-1)
     kl = -0.5 * jnp.sum(1 + 2 * log_std - mu ** 2 - jnp.exp(2 * log_std), axis=-1)
     return jnp.mean(bce + beta * kl)
@@ -123,7 +129,6 @@ def train_vae(
         return optax.apply_updates(params, updates), opt_state, loss
 
     n = images.shape[0]
-    from tqdm import tqdm
     pbar = tqdm(range(1, epochs + 1), desc="VAE", disable=not verbose)
     for epoch in pbar:
         rng, perm_rng = jax.random.split(rng)

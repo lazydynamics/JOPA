@@ -60,8 +60,6 @@ for i in range(n_observed, n_observed + n_predicted):
     img = (img > 0.5 * img.max()).astype(np.float32) if img.max() > 0 else img
     gt_future.append(jnp.array(img))
 
-transform_fn = lambda a: a.reshape(latent_dim, latent_dim)
-
 # ── 3. Baseline: inference-only (frozen VAE) ────────────────────────────────
 print("\n── Baseline (frozen VAE) ──")
 
@@ -69,7 +67,7 @@ encode_fn, decode_fn = make_encode_decode(model, params_pretrained)
 
 baseline = infer(
     observations=sequence, encode_fn=encode_fn, decode_fn=decode_fn,
-    transform_fn=transform_fn, latent_dim=latent_dim,
+    latent_dim=latent_dim,
     n_predict=n_predicted, n_iterations=50,
 )
 
@@ -84,7 +82,6 @@ em_result = variational_em(
     model=model,
     params=params_pretrained,
     trajectories=[{"observations": sequence}],
-    transform_fn=transform_fn,
     latent_dim=latent_dim,
     n_em_iterations=40,
     n_vmp_iterations=20,
@@ -109,7 +106,7 @@ encode_e2e, decode_e2e = make_encode_decode(model, em_result.params)
 
 e2e_infer = infer(
     observations=sequence, encode_fn=encode_e2e, decode_fn=decode_e2e,
-    transform_fn=transform_fn, latent_dim=latent_dim,
+    latent_dim=latent_dim,
     n_predict=n_predicted, n_iterations=50, verbose=False,
 )
 

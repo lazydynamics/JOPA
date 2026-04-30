@@ -41,14 +41,11 @@ encode_fn, decode_fn = make_encode_decode(model, params)
 all_imgs, all_labs = load_mnist()
 digit_idx = np.where(all_labs == 8)[0][0]
 
-# Scale actions so u=1 ≈ one latent-unit displacement.
-# Empirically ~60° rotation ≈ 1 latent unit, so action_scale=60.
-ACTION_SCALE = 60.0
-
+# Actions are angular velocities in degrees per step. B absorbs the
+# latent-vs-degrees scaling.
 print("Generating controlled rotation sequence …")
 frames, actions, angles = make_controlled_sequence(
     digit_idx=digit_idx, n_frames=120, seed=42,
-    action_scale=ACTION_SCALE,
 )
 n_observed = len(frames)
 
@@ -65,23 +62,26 @@ print("\n── Learning A and B (prior: A ~ I) ──")
 vec_I = jnp.eye(latent_dim).ravel()
 n_predict = 80
 
+# Prior knowledge: dynamics is rotation-like (A ≈ I, tight cov), control
+# matrix B can be anything (wide prior).
+prior_kwargs = dict(
+    prior_a_mean=vec_I, prior_a_cov=0.1,
+    init_a_mean=vec_I,  init_a_cov=0.1,
+    prior_b_cov=10.0,   init_b_cov=100.0,
+)
+
+infer_kwargs = dict(
+    encode_fn=encode_fn, decode_fn=decode_fn,
+    latent_dim=latent_dim, action_dim=1,
+    actions=jax_actions, n_predict=n_predict,
+    n_iterations=100,
+    **prior_kwargs,
+)
+
 result = infer(
     observations=sequence,
-    encode_fn=encode_fn,
-    decode_fn=decode_fn,
-    transform_fn=lambda a: a.reshape(latent_dim, latent_dim),
-    latent_dim=latent_dim,
-    actions=jax_actions,
-    action_dim=1,
-    n_predict=n_predict,
     predict_actions=[jnp.zeros(1)] * n_predict,
-    n_iterations=100,
-    prior_a_mean=vec_I,           # prior: A ≈ I
-    prior_a_cov=0.1,             # tight prior around identity
-    init_a_mean=vec_I,
-    init_a_cov=0.1,
-    prior_b_cov=10.0,
-    init_b_cov=100.0,
+    **infer_kwargs,
 )
 
 H = result.transition_matrix
@@ -97,9 +97,10 @@ print(f"  |B|={float(jnp.linalg.norm(B)):.4f}")
 # ── 4. Compare predictions under different actions ────────────────────────
 print("\nPredicting under 3 action regimes …")
 
-# Prediction actions — big enough to produce visible divergence
-u_fwd = 0.5    # strong forward push
-u_rev = -0.5   # strong reverse push
+# Prediction actions in degrees per step — a bit above the training range
+# (raw_speeds peak at 8°/step) to produce visible divergence.
+u_fwd = 10.0
+u_rev = -10.0
 
 action_regimes = {
     "u=0 (stop)":         [jnp.zeros(1)] * n_predict,
@@ -112,22 +113,9 @@ latent_trajs = {}
 for name, pred_actions in action_regimes.items():
     res = infer(
         observations=sequence,
-        encode_fn=encode_fn,
-        decode_fn=decode_fn,
-        transform_fn=lambda a: a.reshape(latent_dim, latent_dim),
-        latent_dim=latent_dim,
-        actions=jax_actions,
-        action_dim=1,
-        n_predict=n_predict,
         predict_actions=pred_actions,
-        n_iterations=100,
-        prior_a_mean=vec_I,
-        prior_a_cov=0.1,
-        init_a_mean=vec_I,
-        init_a_cov=0.1,
-        prior_b_cov=10.0,
-        init_b_cov=100.0,
         verbose=False,
+        **infer_kwargs,
     )
     predictions[name] = res.predictions
     latent_trajs[name] = np.array(res.latent_means)

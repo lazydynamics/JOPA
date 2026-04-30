@@ -12,6 +12,7 @@ __marimo__/
 outputs/*.png
 outputs/*.gif
 outputs/*.mp4
+outputs/*.html
 checkpoints/*.npz
 checkpoints/*.pkl
 .DS_Store
