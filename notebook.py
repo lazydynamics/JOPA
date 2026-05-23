@@ -736,74 +736,46 @@ Same `ct_marginal_yx` that produces messages for learning A, B, W now produces m
 
 
 @app.cell
-def run_all_plans(
-    SimplePendulum, jnp, latent_dim, make_encode_decode,
+def run_plan(
+    SimplePendulum, jnp, make_encode_decode,
     model, np, params_em, plan, result,
 ):
-    """Pre-compute planning results for three target angles."""
+    """Receding-horizon swing-up to θ=π."""
     _vae = make_encode_decode(model, params_em)
+    goal_theta = np.pi
+    _exec_steps = 2
+    _n_replans = 11
 
-    # Each target has its own optimal exec_steps (see diagnostics)
-    _targets = [
-        {"label": "θ = π (swing to top)", "goal": np.pi, "exec_steps": 2, "n_replans": 11},
-    ]
+    _env = SimplePendulum()
+    _env.reset(theta=0.0, theta_dot=0.0)
+    _states = [_env.state.copy()]
+    _frames = [_env.render()]
+    _torques = []
 
-    plan_results = {}
-    for _tgt in _targets:
-        _env = SimplePendulum()
-        _env.reset(theta=0.0, theta_dot=0.0)
-        _states = [_env.state.copy()]
-        _frames = [_env.render()]
-        _torques = []
+    _env_g = SimplePendulum()
+    _env_g.reset(theta=goal_theta, theta_dot=0.0)
+    _goal_img = jnp.array(_env_g.render())
 
-        _env_g = SimplePendulum()
-        _env_g.reset(theta=_tgt["goal"], theta_dot=0.0)
-        _goal_img = jnp.array(_env_g.render())
+    for _ in range(_n_replans):
+        _current_img = jnp.array(_env.render())
+        _obs_plan = [_current_img] + [None] * 6 + [_goal_img]
+        _pr = plan(
+            observations=_obs_plan,
+            vae=_vae,
+            q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
+            action_dim=1,
+            n_iterations=200, verbose=False,
+        )
+        for _i in range(min(_exec_steps, len(_pr.actions))):
+            _t = float(_pr.actions[_i][0])
+            _torques.append(_t)
+            _env.step(_t)
+            _states.append(_env.state.copy())
+            _frames.append(_env.render())
 
-        for _cycle in range(_tgt["n_replans"]):
-            _current_img = jnp.array(_env.render())
-            _obs_plan = [_current_img] + [None] * 6 + [_goal_img]
-            _pr = plan(
-                observations=_obs_plan,
-                vae=_vae,
-                q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
-                action_dim=1,
-                n_iterations=200, verbose=False,
-            )
-            for _i in range(min(_tgt["exec_steps"], len(_pr.actions))):
-                _t = float(_pr.actions[_i][0])
-                _torques.append(_t)
-                _env.step(_t)
-                _states.append(_env.state.copy())
-                _frames.append(_env.render())
-
-        plan_results[_tgt["label"]] = {
-            "goal_theta": _tgt["goal"],
-            "sim_states_arr": np.array(_states),
-            "sim_frames": _frames,
-            "all_torques": _torques,
-        }
-
-    return (plan_results,)
-
-
-@app.cell
-def goal_picker(mo, plan_results):
-    goal_dropdown = mo.ui.dropdown(
-        options=list(plan_results.keys()),
-        value="θ = π (swing to top)",
-        label="**Target angle**",
-    )
-    goal_dropdown
-
-
-@app.cell
-def unpack_plan(plan_results, goal_dropdown, np):
-    _sel = plan_results[goal_dropdown.value]
-    goal_theta = _sel["goal_theta"]
-    sim_states_arr = _sel["sim_states_arr"]
-    sim_frames = _sel["sim_frames"]
-    all_torques = _sel["all_torques"]
+    sim_states_arr = np.array(_states)
+    sim_frames = _frames
+    all_torques = _torques
     return (goal_theta, sim_states_arr, sim_frames, all_torques)
 
 

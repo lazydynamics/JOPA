@@ -87,6 +87,10 @@ print(f"\n  det(A)={det_A:.4f}  |λ|={np.abs(eigs)}")
 print(f"  A:\n{H}")
 print(f"  B: {B.T[0]}")
 print(f"  |B|={float(jnp.linalg.norm(B)):.4f}")
+# Note: |B| is small because the action profile in `make_controlled_sequence`
+# is piecewise-constant + tiny noise — so it's highly predictable from state,
+# and the VMP posterior attributes most of the rotation to A rather than B·u.
+# A more independently-varying action profile would lift |B|.
 
 # ── 4. Compare predictions under different actions ────────────────────────
 print("\nPredicting under 3 action regimes …")

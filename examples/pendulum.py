@@ -3,7 +3,14 @@
 Phase 1 — Pre-train VAE observation model from random trajectories.
 Phase 2 — Variational EM: learn dynamics (A, B, W) via message passing.
 Phase 3 — Receding-horizon MPC: plan actions via message passing to reach goal.
+
+Example
+-------
+    uv run python examples/pendulum.py
+    uv run python examples/pendulum.py --goal-theta 1.57 --n-replans 20
+    uv run python examples/pendulum.py --no-cache  # force EM retrain
 """
+import argparse
 import os
 import pickle
 import jax.numpy as jnp
@@ -14,6 +21,22 @@ from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_de
 from jopa.em import variational_em, Trajectory
 from jopa.inference import plan
 from jopa.distributions import near_identity_prior
+
+_p = argparse.ArgumentParser(description=__doc__,
+                             formatter_class=argparse.RawDescriptionHelpFormatter)
+_p.add_argument("--start-theta", type=float, default=0.0,
+                help="Initial pendulum angle in radians (default: 0.0 = hanging down).")
+_p.add_argument("--goal-theta", type=float, default=float(np.pi),
+                help="Target angle in radians (default: π = upright).")
+_p.add_argument("--horizon", type=int, default=8,
+                help="Planning horizon (steps per replan, default: 8).")
+_p.add_argument("--exec-steps", type=int, default=2,
+                help="Actions executed per replan cycle (default: 2).")
+_p.add_argument("--n-replans", type=int, default=11,
+                help="Number of observe-plan-act cycles (default: 11).")
+_p.add_argument("--no-cache", action="store_true",
+                help="Ignore any cached EM result and retrain from scratch.")
+args = _p.parse_args()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -79,18 +102,21 @@ fingerprint = {
 }
 
 result = None
-try:
-    with open(em_cache, "rb") as f:
-        cached = pickle.load(f)
-    if cached.get("fingerprint") == fingerprint:
-        result = cached["result"]
-        print(f"Loaded EM result from {em_cache}")
-    else:
-        print(f"Cache fingerprint mismatch at {em_cache}; recomputing")
-except FileNotFoundError:
-    pass
-except (pickle.UnpicklingError, EOFError, KeyError) as e:
-    print(f"Cache at {em_cache} unreadable ({e!r}); recomputing")
+if args.no_cache:
+    print(f"--no-cache: skipping {em_cache} and retraining")
+else:
+    try:
+        with open(em_cache, "rb") as f:
+            cached = pickle.load(f)
+        if cached.get("fingerprint") == fingerprint:
+            result = cached["result"]
+            print(f"Loaded EM result from {em_cache}")
+        else:
+            print(f"Cache fingerprint mismatch at {em_cache}; recomputing")
+    except FileNotFoundError:
+        pass
+    except (pickle.UnpicklingError, EOFError, KeyError) as e:
+        print(f"Cache at {em_cache} unreadable ({e!r}); recomputing")
 
 if result is None:
     result = variational_em(
@@ -124,11 +150,11 @@ print("\n══ Planning as Inference (receding horizon) ══")
 
 vae = make_encode_decode(model, params)
 
-start_theta = 0.0
-goal_theta = np.pi
-T_horizon = 8       # plan this many steps ahead
-N_replan = 11        # number of observe-plan-act cycles
-exec_steps = 2       # execute this many actions per cycle
+start_theta = args.start_theta
+goal_theta = args.goal_theta
+T_horizon = args.horizon
+N_replan = args.n_replans
+exec_steps = args.exec_steps
 
 # Encode goal image once
 env_goal = SimplePendulum()
