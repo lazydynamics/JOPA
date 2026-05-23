@@ -431,12 +431,13 @@ def vae_gif(mo, np, vae_sample_imgs, vae_snapshots):
     import io as _io
 
     if len(vae_snapshots) > 1:
+        # Originals row + separator are constant across snapshots — hoist out
+        _row_orig = np.hstack(vae_sample_imgs)
+        _sep = np.ones((2, _row_orig.shape[1])) * 0.3
         _pil_frames = []
         for _snap in vae_snapshots:
-            # Stitch originals (top) + reconstructions (bottom) into one wide frame
-            _row_orig = np.hstack(vae_sample_imgs)
             _row_recon = np.hstack(_snap["recons"])
-            _combined = np.vstack([_row_orig, np.ones((2, _row_orig.shape[1])) * 0.3, _row_recon])
+            _combined = np.vstack([_row_orig, _sep, _row_recon])
             _uint8 = np.clip(_combined * 255, 0, 255).astype(np.uint8)
             _pil_frames.append(_PILImage.fromarray(_uint8, "L").resize(
                 (_uint8.shape[1] * 3, _uint8.shape[0] * 3), _PILImage.NEAREST))
@@ -504,6 +505,7 @@ def sysid_cell(
     trajectories,
     variational_em,
 ):
+    import os as _os
     import pickle as _pickle
 
     _traj0_obs = trajectories[0]["observations"]
@@ -513,19 +515,34 @@ def sysid_cell(
     sample_actions = [_traj0_acts[i] for i in _sample_indices]
 
     _cache_path = "checkpoints/em_result_raw_torque.pkl"
+    _vae_path = "checkpoints/vae_pendulum_d4.npz"
     _vec_I = jnp.eye(latent_dim).ravel()
 
-    # Try loading cached EM result
-    _loaded = False
+    # Fingerprint = (VAE checkpoint mtime, EM hyperparams). Cache invalidates
+    # if the VAE was retrained or hyperparameters changed.
+    _em_hparams = dict(
+        n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
+        beta_recon=1.0, prior_a_cov=0.5, init_a_cov=0.5,
+        prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+    )
+    _vae_mtime = _os.path.getmtime(_vae_path) if _os.path.exists(_vae_path) else None
+    _fingerprint = {"vae_mtime": _vae_mtime, "hparams": _em_hparams}
+
+    result, em_snapshots, _loaded = None, None, False
     try:
         with open(_cache_path, "rb") as _f:
             _cached = _pickle.load(_f)
-        result = _cached["result"]
-        em_snapshots = _cached["em_snapshots"]
-        _loaded = True
-        print(f"Loaded cached EM result from {_cache_path}")
-    except (FileNotFoundError, Exception):
+        if _cached.get("fingerprint") == _fingerprint:
+            result = _cached["result"]
+            em_snapshots = _cached["em_snapshots"]
+            _loaded = True
+            print(f"Loaded cached EM result from {_cache_path}")
+        else:
+            print(f"Cache fingerprint mismatch at {_cache_path}; recomputing")
+    except FileNotFoundError:
         pass
+    except (_pickle.UnpicklingError, EOFError, KeyError) as _e:
+        print(f"Cache at {_cache_path} unreadable ({_e!r}); recomputing")
 
     if not _loaded:
         em_snapshots = []
@@ -544,19 +561,16 @@ def sysid_cell(
         result = variational_em(
             model=model, params=params, trajectories=trajectories,
             latent_dim=latent_dim, action_dim=1,
-            n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
-            beta_recon=1.0, prior_a_mean=_vec_I, prior_a_cov=0.5, init_a_cov=0.5,
-            prior_b_cov=10.0, init_b_cov=100.0, seed=42,
-            callback=_em_callback,
+            prior_a_mean=_vec_I, callback=_em_callback,
+            **_em_hparams,
         )
 
-        # Cache for next time
-        try:
-            with open(_cache_path, "wb") as _f:
-                _pickle.dump({"result": result, "em_snapshots": em_snapshots}, _f)
-            print(f"Saved EM result to {_cache_path}")
-        except Exception:
-            pass
+        with open(_cache_path, "wb") as _f:
+            _pickle.dump(
+                {"fingerprint": _fingerprint, "result": result, "em_snapshots": em_snapshots},
+                _f,
+            )
+        print(f"Saved EM result to {_cache_path}")
 
     det_A = float(jnp.linalg.det(result.transition_matrix))
     eig_mods = np.abs(np.linalg.eigvals(np.array(result.transition_matrix)))
@@ -670,11 +684,13 @@ def em_gif(em_actuals, em_snapshots, mo, np):
     from PIL import Image as _PILImage
     import io as _io
 
+    # Ground-truth row + separator are constant across iterations — hoist out
+    _row_actual = np.hstack(em_actuals)
+    _sep = np.ones((2, _row_actual.shape[1])) * 0.3
     _pil_frames = []
     for _snap in em_snapshots:
-        _row_actual = np.hstack(em_actuals)
         _row_pred = np.hstack(_snap["preds"])
-        _combined = np.vstack([_row_actual, np.ones((2, _row_actual.shape[1])) * 0.3, _row_pred])
+        _combined = np.vstack([_row_actual, _sep, _row_pred])
         _uint8 = np.clip(_combined * 255, 0, 255).astype(np.uint8)
         _pil_frames.append(_PILImage.fromarray(_uint8, "L").resize(
             (_uint8.shape[1] * 3, _uint8.shape[0] * 3), _PILImage.NEAREST))

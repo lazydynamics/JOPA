@@ -67,20 +67,38 @@ print("\n══ System Identification (Variational EM) ══")
 vec_I = jnp.eye(latent_dim).ravel()
 em_cache = os.path.join(CHECKPOINTS, "em_result_pendulum.pkl")
 
+em_hparams = dict(
+    n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
+    beta_recon=1.0, prior_a_cov=0.5, init_a_cov=0.5,
+    prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+)
+fingerprint = {
+    "vae_mtime": os.path.getmtime(vae_path),
+    "hparams": em_hparams,
+}
+
+result = None
 try:
     with open(em_cache, "rb") as f:
-        result = pickle.load(f)
-    print(f"Loaded EM result from {em_cache}")
+        cached = pickle.load(f)
+    if cached.get("fingerprint") == fingerprint:
+        result = cached["result"]
+        print(f"Loaded EM result from {em_cache}")
+    else:
+        print(f"Cache fingerprint mismatch at {em_cache}; recomputing")
 except FileNotFoundError:
+    pass
+except (pickle.UnpicklingError, EOFError, KeyError) as e:
+    print(f"Cache at {em_cache} unreadable ({e!r}); recomputing")
+
+if result is None:
     result = variational_em(
         model=model, params=params, trajectories=trajectories,
         latent_dim=latent_dim, action_dim=1,
-        n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
-        beta_recon=1.0, prior_a_mean=vec_I, prior_a_cov=0.5, init_a_cov=0.5,
-        prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+        prior_a_mean=vec_I, **em_hparams,
     )
     with open(em_cache, "wb") as f:
-        pickle.dump(result, f)
+        pickle.dump({"fingerprint": fingerprint, "result": result}, f)
     print(f"Saved EM result to {em_cache}")
 
 A = result.transition_matrix
