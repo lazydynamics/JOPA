@@ -56,11 +56,8 @@ class InferenceResult:
 
 def infer(
     observations: Sequence[jnp.ndarray | None],
-    encode_fn: Callable,
-    decode_fn: Callable,
-    latent_dim: int,
+    vae,
     *,
-    transform_fn: Callable | None = None,
     actions: Sequence[jnp.ndarray] | None = None,
     action_dim: int | None = None,
     n_predict: int = 0,
@@ -83,7 +80,7 @@ def infer(
         a  ~ N(0, prior_a_cov · I)        — vec(transition matrix A)
         b  ~ N(0, prior_b_cov · I)        — vec(control matrix B)
         x₁ ~ N(0, I)
-        xₜ ~ N(A·xₜ₋₁ + B·uₜ₋₁, W⁻¹)  — A = transform_fn(a)
+        xₜ ~ N(A·xₜ₋₁ + B·uₜ₋₁, W⁻¹)  — A = reshape(a, (d, d))
         yₜ ~ VAENode(xₜ)
 
     Parameters
@@ -92,7 +89,6 @@ def infer(
         Observed images; ``None`` entries are missing (unobserved).
     encode_fn : (image) → (mean, log_std)
     decode_fn : (z) → image
-    transform_fn : (a) → A
     latent_dim : int
     actions : list of (du,) arrays, optional
         Control inputs u[t] for t=0..T_obs-2 (one per transition).
@@ -105,12 +101,10 @@ def infer(
         Actions for prediction steps. Length must be n_predict.
         If None and actions given, uses zeros.
     """
-    d = latent_dim
+    encode_fn, decode_fn, d = vae.encode, vae.decode, vae.latent_dim
     da = d * d
     T_obs = len(observations)
-    if transform_fn is None:
-        transform_fn = lambda a: a.reshape(d, d)
-    meta = CTMeta(transform_fn)
+    meta = CTMeta(lambda a: a.reshape(d, d))
 
     has_control = actions is not None
     if has_control:
@@ -205,15 +199,12 @@ class PlanResult:
 
 def plan(
     observations: Sequence[jnp.ndarray | None],
-    encode_fn: Callable,
-    decode_fn: Callable,
+    vae,
     q_a: Gaussian,
     q_W: Wishart,
     q_b: Gaussian,
-    latent_dim: int,
     action_dim: int,
     *,
-    transform_fn: Callable | None = None,
     n_iterations: int = 50,
     verbose: bool = True,
 ) -> PlanResult:
@@ -243,12 +234,10 @@ def plan(
     Scale-invariant in u (|B|² absorbs units) and in latent space (uses
     observed distance, not an arbitrary radius).
     """
-    d = latent_dim
+    encode_fn, decode_fn, d = vae.encode, vae.decode, vae.latent_dim
     du = action_dim
     T = len(observations)
-    if transform_fn is None:
-        transform_fn = lambda a: a.reshape(d, d)
-    meta = CTMeta(transform_fn)
+    meta = CTMeta(lambda a: a.reshape(d, d))
     n_ct = T - 1
 
     vae_msgs = encode_observations(observations, encode_fn, d)

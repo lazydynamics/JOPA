@@ -36,7 +36,7 @@ except FileNotFoundError:
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
-encode_fn, decode_fn = make_encode_decode(model, params)
+vae = make_encode_decode(model, params)
 
 # ── 2. Generate controlled sequence ────────────────────────────────────────
 all_imgs, all_labs = load_mnist()
@@ -65,8 +65,7 @@ n_predict = 80
 # Prior knowledge: dynamics is rotation-like (A ≈ I, tight cov), control
 # matrix B can be anything (wide prior).
 infer_kwargs = dict(
-    encode_fn=encode_fn, decode_fn=decode_fn,
-    latent_dim=latent_dim, action_dim=1,
+    vae=vae, action_dim=1,
     actions=jax_actions, n_predict=n_predict,
     n_iterations=100,
     prior_b_cov=10.0, init_b_cov=100.0,

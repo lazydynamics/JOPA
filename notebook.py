@@ -263,6 +263,8 @@ def config():
 
 @app.cell
 def generate_data(SimplePendulum, jnp, np):
+    from jopa.em import Trajectory
+
     env = SimplePendulum()
     _n_traj = 10
     _traj_len = 80
@@ -278,9 +280,9 @@ def generate_data(SimplePendulum, jnp, np):
             _acts.append(jnp.array([_torque]))
             env.step(_torque)
             _obs.append(jnp.array(env.render()))
-        trajectories.append({"observations": _obs, "actions": _acts})
+        trajectories.append(Trajectory(observations=_obs, actions=_acts))
 
-    n_frames = sum(len(t["observations"]) for t in trajectories)
+    n_frames = sum(len(t.observations) for t in trajectories)
     return env, n_frames, trajectories
 
 
@@ -335,8 +337,8 @@ def train_vae_cell(
 
     def _vae_callback(_epoch, _cb_params, _loss):
         if _epoch == 1 or _epoch % 5 == 0:
-            _enc, _dec = make_encode_decode(model, _cb_params)
-            _recons = [np.array(_dec(_enc(jnp.array(_img))[0])) for _img in vae_sample_imgs]
+            _v = make_encode_decode(model, _cb_params)
+            _recons = [np.array(_v.decode(_v.encode(jnp.array(_img))[0])) for _img in vae_sample_imgs]
             vae_snapshots.append({"epoch": _epoch, "recons": _recons, "loss": float(_loss)})
 
     try:
@@ -344,7 +346,7 @@ def train_vae_cell(
     except FileNotFoundError:
         _all_frames = []
         for _traj in trajectories:
-            _all_frames.extend([np.array(o) for o in _traj["observations"]])
+            _all_frames.extend([np.array(o) for o in _traj.observations])
         for _theta in np.linspace(-np.pi, np.pi, 200):
             _env.reset(theta=_theta, theta_dot=0.0)
             _all_frames.append(_env.render())
@@ -356,8 +358,8 @@ def train_vae_cell(
         save_params(params, _vae_path)
 
     if not vae_snapshots:
-        _enc, _dec = make_encode_decode(model, params)
-        _recons = [np.array(_dec(_enc(jnp.array(_img))[0])) for _img in vae_sample_imgs]
+        _v = make_encode_decode(model, params)
+        _recons = [np.array(_v.decode(_v.encode(jnp.array(_img))[0])) for _img in vae_sample_imgs]
         vae_snapshots.append({"epoch": 100, "recons": _recons, "loss": None})
     return model, params, vae_sample_imgs, vae_snapshots
 
@@ -508,8 +510,8 @@ def sysid_cell(
     import os as _os
     import pickle as _pickle
 
-    _traj0_obs = trajectories[0]["observations"]
-    _traj0_acts = trajectories[0]["actions"]
+    _traj0_obs = trajectories[0].observations
+    _traj0_acts = trajectories[0].actions
     _sample_indices = [0, 10, 20, 35, 50]
     sample_pairs = [(jnp.array(_traj0_obs[i]), jnp.array(_traj0_obs[i + 1])) for i in _sample_indices]
     sample_actions = [_traj0_acts[i] for i in _sample_indices]
@@ -548,14 +550,14 @@ def sysid_cell(
         em_snapshots = []
 
         def _em_callback(_it, _cb_params, _mA, _mB, _loss, _det_A):
-            _enc, _dec = make_encode_decode(model, _cb_params)
+            _v = make_encode_decode(model, _cb_params)
             _preds = []
             for (_img_t, _), _u_t in zip(sample_pairs, sample_actions):
-                _z_t, _ = _enc(_img_t)
+                _z_t, _ = _v.encode(_img_t)
                 _z_next = _mA @ _z_t
                 if _mB is not None:
                     _z_next = _z_next + _mB @ _u_t
-                _preds.append(np.array(_dec(_z_next)))
+                _preds.append(np.array(_v.decode(_z_next)))
             em_snapshots.append({"preds": _preds, "loss": float(_loss), "det_A": float(_det_A)})
 
         result = variational_em(
@@ -739,7 +741,7 @@ def run_all_plans(
     model, np, params_em, plan, result,
 ):
     """Pre-compute planning results for three target angles."""
-    _encode_fn, _decode_fn = make_encode_decode(model, params_em)
+    _vae = make_encode_decode(model, params_em)
 
     # Each target has its own optimal exec_steps (see diagnostics)
     _targets = [
@@ -763,9 +765,9 @@ def run_all_plans(
             _obs_plan = [_current_img] + [None] * 6 + [_goal_img]
             _pr = plan(
                 observations=_obs_plan,
-                encode_fn=_encode_fn, decode_fn=_decode_fn,
+                vae=_vae,
                 q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
-                latent_dim=latent_dim, action_dim=1,
+                action_dim=1,
                 n_iterations=200, verbose=False,
             )
             for _i in range(min(_tgt["exec_steps"], len(_pr.actions))):

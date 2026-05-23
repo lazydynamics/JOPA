@@ -1,6 +1,6 @@
 """Convolutional VAE for learning smooth latent representations of spatial data."""
 from __future__ import annotations
-from typing import Callable
+from typing import Callable, NamedTuple
 from pathlib import Path
 
 import jax
@@ -157,8 +157,20 @@ def train_vae(
 # Encode / decode helpers
 # ---------------------------------------------------------------------------
 
-def make_encode_decode(model, params):
-    """Create jitted single-image encode/decode functions from a VAE.
+class VAEAdapter(NamedTuple):
+    """Bundle of jitted ``encode``/``decode`` closures and ``latent_dim``.
+
+    Returned by :func:`make_encode_decode`; consumed by
+    :func:`jopa.inference.infer` and :func:`jopa.inference.plan` so callers
+    pass a single object instead of three separate arguments.
+    """
+    encode: Callable
+    decode: Callable
+    latent_dim: int
+
+
+def make_encode_decode(model, params) -> "VAEAdapter":
+    """Create a :class:`VAEAdapter` from a trained VAE.
 
     The encoder clips ``log_std`` to ``LOG_STD_CLIP`` to match training.
     """
@@ -173,7 +185,7 @@ def make_encode_decode(model, params):
     def decode_fn(z):
         return model.apply(params, z.reshape(1, -1), method=model.decode)[0].reshape(28, 28)
 
-    return encode_fn, decode_fn
+    return VAEAdapter(encode=encode_fn, decode=decode_fn, latent_dim=model.latent_dim)
 
 
 # ---------------------------------------------------------------------------

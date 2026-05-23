@@ -11,7 +11,7 @@ import numpy as np
 
 from jopa.envs import SimplePendulum
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
-from jopa.em import variational_em
+from jopa.em import variational_em, Trajectory
 from jopa.inference import plan
 from jopa.distributions import near_identity_prior
 
@@ -38,9 +38,9 @@ for ep in range(n_trajectories):
         acts.append(jnp.array([torque]))
         env.step(torque)
         obs.append(jnp.array(env.render()))
-    trajectories.append({"observations": obs, "actions": acts})
+    trajectories.append(Trajectory(observations=obs, actions=acts))
 
-total_frames = sum(len(t["observations"]) for t in trajectories)
+total_frames = sum(len(t.observations) for t in trajectories)
 print(f"  {n_trajectories} trajectories × {traj_len} steps = {total_frames} frames")
 
 # ── 2. Pre-train VAE (observation model) ──────────────────────────────────
@@ -54,7 +54,7 @@ except FileNotFoundError:
     print("Pre-training VAE …")
     all_frames = []
     for traj in trajectories:
-        all_frames.extend([np.array(o) for o in traj["observations"]])
+        all_frames.extend([np.array(o) for o in traj.observations])
     for theta in np.linspace(-np.pi, np.pi, 200):
         env.reset(theta=theta, theta_dot=0.0)
         all_frames.append(env.render())
@@ -122,7 +122,7 @@ print(f"  |B|={float(jnp.linalg.norm(B)):.3f}")
 #
 print("\n══ Planning as Inference (receding horizon) ══")
 
-encode_fn, decode_fn = make_encode_decode(model, params)
+vae = make_encode_decode(model, params)
 
 start_theta = 0.0
 goal_theta = np.pi
@@ -146,9 +146,9 @@ for cycle in range(N_replan):
     observations = [current_img] + [None] * (T_horizon - 2) + [goal_img]
     plan_result = plan(
         observations=observations,
-        encode_fn=encode_fn, decode_fn=decode_fn,
+        vae=vae,
         q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
-        latent_dim=latent_dim, action_dim=1,
+        action_dim=1,
         n_iterations=200, verbose=False,
     )
 

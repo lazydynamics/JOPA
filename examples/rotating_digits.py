@@ -41,7 +41,7 @@ except FileNotFoundError:
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
-encode_fn, decode_fn = make_encode_decode(model, params)
+vae = make_encode_decode(model, params)
 
 # ── 3. Inference ───────────────────────────────────────────────────────────
 # Build observation sequence: 100 rotated frames of one digit
@@ -59,9 +59,7 @@ sequence = [jnp.array(f) for f in rotation_sequence(base_img, n_observed, step_d
 print(f"Running inference ({n_observed} observed + {n_predicted} predicted) …")
 result = infer(
     observations=sequence,
-    encode_fn=encode_fn,
-    decode_fn=decode_fn,
-    latent_dim=4,
+    vae=vae,
     n_predict=n_predicted,
     n_iterations=50,
 )

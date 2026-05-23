@@ -10,7 +10,7 @@ import numpy as np
 
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
 from jopa.data import load_mnist, rotating_mnist, rotation_sequence
-from jopa.em import variational_em
+from jopa.em import variational_em, Trajectory
 from jopa.inference import infer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,11 +56,10 @@ gt_future = [jnp.array(f) for f in all_frames[n_observed:]]
 # ── 3. Baseline: inference-only (frozen VAE) ────────────────────────────────
 print("\n── Baseline (frozen VAE) ──")
 
-encode_fn, decode_fn = make_encode_decode(model, params_pretrained)
+vae_pretrained = make_encode_decode(model, params_pretrained)
 
 baseline = infer(
-    observations=sequence, encode_fn=encode_fn, decode_fn=decode_fn,
-    latent_dim=latent_dim,
+    observations=sequence, vae=vae_pretrained,
     n_predict=n_predicted, n_iterations=50,
 )
 
@@ -74,7 +73,7 @@ print("\n── Variational EM (40 EM iters) ──")
 em_result = variational_em(
     model=model,
     params=params_pretrained,
-    trajectories=[{"observations": sequence}],
+    trajectories=[Trajectory(observations=sequence)],
     latent_dim=latent_dim,
     n_em_iterations=40,
     n_vmp_iterations=20,
@@ -95,11 +94,10 @@ print(f"  Expected step: {step_deg:.2f}°")
 
 # ── 5. Predictions with refined VAE ────────────────────────────────────────
 print("\nRunning prediction with refined VAE …")
-encode_e2e, decode_e2e = make_encode_decode(model, em_result.params)
+vae_e2e = make_encode_decode(model, em_result.params)
 
 e2e_infer = infer(
-    observations=sequence, encode_fn=encode_e2e, decode_fn=decode_e2e,
-    latent_dim=latent_dim,
+    observations=sequence, vae=vae_e2e,
     n_predict=n_predicted, n_iterations=50, verbose=False,
 )
 
