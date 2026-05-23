@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
+import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
@@ -165,15 +166,10 @@ def infer(
 
     all_vae = vae_msgs + [vague_gaussian(d)] * n_predict
     alphas, betas, _, _ = forward_backward(prior_x, all_vae, cache, all_actions)
-    marginals = compute_marginals(alphas, betas, all_vae)
+    marginals = compute_marginals(alphas, betas, all_vae)  # stacked Gaussian
 
-    lat_means, lat_covs = [], []
-    for q in marginals:
-        mu, cov = gaussian_mean_cov(q)
-        lat_means.append(mu)
-        lat_covs.append(cov)
-
-    preds = [vae_predict(q, decode_fn) for q in marginals]
+    lat_means, lat_covs = jax.vmap(gaussian_mean_cov)(marginals)
+    preds = list(jax.vmap(lambda q: vae_predict(q, decode_fn))(marginals))
 
     ma = gaussian_mean(q_a)
     mW = wishart_mean(q_W)
@@ -183,8 +179,8 @@ def infer(
         control_matrix = mb.reshape(d, du)
 
     return InferenceResult(
-        latent_means=jnp.stack(lat_means),
-        latent_covs=jnp.stack(lat_covs),
+        latent_means=lat_means,
+        latent_covs=lat_covs,
         transition_matrix=meta.f(ma),
         transition_precision=mW,
         predictions=preds,
@@ -279,38 +275,39 @@ def plan(
     prior_u_lam = jnp.diag(b_col_var / latent_shift_sq)
     prior_u = Gaussian(eta=jnp.zeros(du), lam=prior_u_lam)
 
-    # Initialise action posteriors at the prior
-    q_us = [prior_u for _ in range(n_ct)]
+    # Initialise action posteriors at the prior, stacked along axis 0
+    q_us = Gaussian(
+        eta=jnp.broadcast_to(prior_u.eta, (n_ct, du)),
+        lam=jnp.broadcast_to(prior_u.lam, (n_ct, du, du)),
+    )
+
+    def _action_update(m_y, m_x, u):
+        q_yx = ct_marginal_yx(m_y, m_x, cache, u)
+        msg_u = ct_message_u(q_yx, cache)
+        return combine_gaussians(prior_u, msg_u)
+    _vmapped_action_update = jax.vmap(_action_update)
 
     pbar = tqdm(range(n_iterations), desc="Plan", disable=not verbose)
     for _ in pbar:
-        u_means = [gaussian_mean(qu) for qu in q_us]
+        u_means = jax.vmap(gaussian_mean)(q_us)             # (n_ct, du)
+        _, _, m_xs, m_ys = forward_backward(prior_x, vae_msgs, cache, u_means)
+        q_us = _vmapped_action_update(m_ys, m_xs, u_means)
 
-        # BP: forward-backward with current action means
-        alphas, betas, m_xs, m_ys = forward_backward(
-            prior_x, vae_msgs, cache, u_means)
-
-        # VMP: update each action posterior from its CT factor message + prior
-        for k in range(n_ct):
-            q_yx = ct_marginal_yx(m_ys[k], m_xs[k], cache, u_means[k])
-            msg_u = ct_message_u(q_yx, cache)
-            q_us[k] = combine_gaussians(prior_u, msg_u)
-
-        u_norms = [float(jnp.linalg.norm(gaussian_mean(qu))) for qu in q_us]
+        u_norms = jnp.linalg.norm(jax.vmap(gaussian_mean)(q_us), axis=-1)
         pbar.set_postfix({
-            "mean|u|": f"{sum(u_norms)/len(u_norms):.4f}",
-            "max|u|": f"{max(u_norms):.4f}",
+            "mean|u|": f"{float(u_norms.mean()):.4f}",
+            "max|u|": f"{float(u_norms.max()):.4f}",
         })
 
     # Final marginals with converged actions
-    u_means = [gaussian_mean(qu) for qu in q_us]
+    u_means = jax.vmap(gaussian_mean)(q_us)                  # (n_ct, du)
     alphas, betas, _, _ = forward_backward(prior_x, vae_msgs, cache, u_means)
     marginals = compute_marginals(alphas, betas, vae_msgs)
-    lat_means = [gaussian_mean(q) for q in marginals]
-    preds = [vae_predict(q, decode_fn) for q in marginals]
+    lat_means = jax.vmap(gaussian_mean)(marginals)
+    preds = list(jax.vmap(lambda q: vae_predict(q, decode_fn))(marginals))
 
     return PlanResult(
         actions=u_means,
-        latent_means=jnp.stack(lat_means),
+        latent_means=lat_means,
         predictions=preds,
     )

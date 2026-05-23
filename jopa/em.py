@@ -95,13 +95,8 @@ def _e_step_trajectory(
     alphas, betas, _, _ = forward_backward(prior_x, vae_msgs, cache, actions)
     marginals = compute_marginals(alphas, betas, vae_msgs)
 
-    marginal_means, marginal_covs = [], []
-    for q in marginals:
-        mu, cov = gaussian_mean_cov(q)
-        marginal_means.append(mu)
-        marginal_covs.append(cov)
-
-    return q_a, q_W, q_b, jnp.stack(marginal_means), jnp.stack(marginal_covs)
+    marginal_means, marginal_covs = jax.vmap(gaussian_mean_cov)(marginals)
+    return q_a, q_W, q_b, marginal_means, marginal_covs
 
 
 # ---------------------------------------------------------------------------

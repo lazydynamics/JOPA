@@ -5,6 +5,7 @@ When u=None, reduces to the standard y ~ N(A·x, W⁻¹).
 
 Structured factorisation: q(y,x) q(a) q(b) q(W).
 """
+import jax
 import jax.numpy as jnp
 from ..distributions import Gaussian, Wishart, gaussian_mean_cov, wishart_mean
 
@@ -51,8 +52,13 @@ def _E_AMA(EaaT, Ex_xx, dy, dx):
 # Precompute shared quantities for one VMP iteration
 # ---------------------------------------------------------------------------
 
+@jax.tree_util.register_pytree_node_class
 class CTCache:
-    """Pre-computed quantities constant within one VMP iteration."""
+    """Pre-computed quantities constant within one VMP iteration.
+
+    Registered as a JAX pytree so it can be passed into ``jit``/``scan``
+    bodies without re-tracing on every VMP iteration.
+    """
     __slots__ = ("mA", "mW", "mW_inv", "Va", "ma", "EaaT", "dy", "dx",
                  "mB", "Vb", "mb", "EbbT", "du")
 
@@ -86,6 +92,22 @@ class CTCache:
             self.mb = None
             self.EbbT = None
             self.du = 0
+
+    def tree_flatten(self):
+        children = (
+            self.mA, self.mW, self.mW_inv, self.Va, self.ma, self.EaaT,
+            self.mB, self.Vb, self.mb, self.EbbT,
+        )
+        aux_data = (self.dy, self.dx, self.du)
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = cls.__new__(cls)
+        (obj.mA, obj.mW, obj.mW_inv, obj.Va, obj.ma, obj.EaaT,
+         obj.mB, obj.Vb, obj.mb, obj.EbbT) = children
+        obj.dy, obj.dx, obj.du = aux_data
+        return obj
 
 
 # ---------------------------------------------------------------------------
