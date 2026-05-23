@@ -5,6 +5,7 @@ Phase 2 — Variational EM: learn dynamics (A, B, W) via message passing.
 Phase 3 — Receding-horizon MPC: plan actions via message passing to reach goal.
 """
 import os
+import pickle
 import jax.numpy as jnp
 import numpy as np
 
@@ -64,14 +65,23 @@ except FileNotFoundError:
 # ── 3. Variational EM: learn A, B, W via message passing ─────────────────
 print("\n══ System Identification (Variational EM) ══")
 vec_I = jnp.eye(latent_dim).ravel()
+em_cache = os.path.join(CHECKPOINTS, "em_result_pendulum.pkl")
 
-result = variational_em(
-    model=model, params=params, trajectories=trajectories,
-    latent_dim=latent_dim, action_dim=1,
-    n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
-    beta_recon=1.0, prior_a_mean=vec_I, prior_a_cov=0.5, init_a_cov=0.5,
-    prior_b_cov=10.0, init_b_cov=100.0, seed=42,
-)
+try:
+    with open(em_cache, "rb") as f:
+        result = pickle.load(f)
+    print(f"Loaded EM result from {em_cache}")
+except FileNotFoundError:
+    result = variational_em(
+        model=model, params=params, trajectories=trajectories,
+        latent_dim=latent_dim, action_dim=1,
+        n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
+        beta_recon=1.0, prior_a_mean=vec_I, prior_a_cov=0.5, init_a_cov=0.5,
+        prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+    )
+    with open(em_cache, "wb") as f:
+        pickle.dump(result, f)
+    print(f"Saved EM result to {em_cache}")
 
 A = result.transition_matrix
 B = result.control_matrix

@@ -31,7 +31,7 @@ def encode_observations(observations, encode_fn, latent_dim):
     images = jnp.stack([jnp.array(observations[i]) for i in present_idx])
     means, log_stds = jax.vmap(encode_fn)(images)
 
-    msgs = [vague_gaussian(latent_dim)] * T
+    msgs = [vague_gaussian(latent_dim) for _ in range(T)]
     for j, i in enumerate(present_idx):
         var = jnp.exp(2.0 * log_stds[j])
         lam = jnp.diag(1.0 / var)

@@ -1,31 +1,12 @@
 """VAE observation node for bridging neural networks with message passing.
 
-Backward rule (x ← y): encode observed image → Gaussian message in latent space.
-Forward  rule (y ← x): decode latent mean   → predicted image.
+Forward rule (y ← x): decode latent mean → predicted image.
+
+The backward rule (image → Gaussian message) is provided by
+``jopa.message_passing.encode_observations`` for whole sequences at once.
 """
 import jax.numpy as jnp
 from ..distributions import Gaussian
-
-
-def vae_observe(image: jnp.ndarray, encode_fn) -> Gaussian:
-    """Backward message: encode an observed image into a latent Gaussian.
-
-    Parameters
-    ----------
-    image : array (H, W) or (H, W, 1)
-        Observed image.
-    encode_fn : callable
-        image → (mean, log_std)  where both have shape (d,).
-
-    Returns
-    -------
-    Gaussian in information form.
-    """
-    mean, log_std = encode_fn(image)
-    var = jnp.exp(2.0 * log_std)
-    lam = jnp.diag(1.0 / var)
-    eta = lam @ mean
-    return Gaussian(eta=eta, lam=lam)
 
 
 def vae_predict(q_x: Gaussian, decode_fn) -> jnp.ndarray:

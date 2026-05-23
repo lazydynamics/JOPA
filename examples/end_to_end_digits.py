@@ -224,7 +224,7 @@ try:
     print(f"Saved {OUTPUTS}/varem_diagnostics.png")
 
     # --- Figure 3: Transition matrices side by side ---
-    fig3, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3.5))
+    fig3, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.5), constrained_layout=True)
     im1 = ax1.imshow(np.array(H_base), cmap="RdBu_r", vmin=-1, vmax=1)
     ax1.set_title(f"Baseline A (det={det_base:.3f})")
     for i in range(latent_dim):
@@ -236,7 +236,6 @@ try:
         for j in range(latent_dim):
             ax2.text(j, i, f"{float(H_e2e[i,j]):.2f}", ha="center", va="center", fontsize=9)
     fig3.colorbar(im2, ax=[ax1, ax2], shrink=0.8)
-    plt.tight_layout()
     plt.savefig(os.path.join(OUTPUTS, "varem_transition_matrices.png"), dpi=150)
     print(f"Saved {OUTPUTS}/varem_transition_matrices.png")
 

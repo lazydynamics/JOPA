@@ -128,18 +128,19 @@ def train_vae(
         updates, opt_state = tx.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), opt_state, loss
 
-    n = images.shape[0]
+    images_jax = jnp.asarray(images)
+    n = images_jax.shape[0]
     pbar = tqdm(range(1, epochs + 1), desc="VAE", disable=not verbose)
     for epoch in pbar:
         rng, perm_rng = jax.random.split(rng)
-        imgs = images[jax.random.permutation(perm_rng, n)]
+        imgs = images_jax[jax.random.permutation(perm_rng, n)]
         beta = min(1.0, 0.1 + 0.9 * (epoch - 1) / 15)
 
         losses = []
         for i in range(0, n, batch_size):
             rng, z_rng = jax.random.split(rng)
             params, opt_state, loss = step(
-                params, opt_state, jnp.array(imgs[i : i + batch_size]), z_rng, beta,
+                params, opt_state, imgs[i : i + batch_size], z_rng, beta,
             )
             losses.append(float(loss))
 
@@ -156,11 +157,15 @@ def train_vae(
 # ---------------------------------------------------------------------------
 
 def make_encode_decode(model, params):
-    """Create jitted single-image encode/decode functions from a VAE."""
+    """Create jitted single-image encode/decode functions from a VAE.
+
+    The encoder clips ``log_std`` to ``LOG_STD_CLIP`` to match training.
+    """
 
     @jax.jit
     def encode_fn(image):
         mu, ls = model.apply(params, image.reshape(1, 28, 28), method=model.encode)
+        ls = jnp.clip(ls, *LOG_STD_CLIP)
         return mu[0], ls[0]
 
     @jax.jit

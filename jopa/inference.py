@@ -107,7 +107,6 @@ def infer(
     d = latent_dim
     da = d * d
     T_obs = len(observations)
-    T = T_obs + n_predict
     if transform_fn is None:
         transform_fn = lambda a: a.reshape(d, d)
     meta = CTMeta(transform_fn)
