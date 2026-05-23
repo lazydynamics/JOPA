@@ -139,6 +139,7 @@ def variational_em(
     prior_a_cov: float = PRIOR_A_COV,
     prior_a_mean: jnp.ndarray | None = None,
     init_a_cov: float = INIT_A_COV,
+    init_a_mean: jnp.ndarray | None = None,
     prior_b_cov: float = PRIOR_B_COV,
     init_b_cov: float = INIT_B_COV,
     seed: int = 0,
@@ -167,8 +168,10 @@ def variational_em(
     meta = CTMeta(transform_fn)
 
     # Priors
+    if init_a_mean is None:
+        init_a_mean = prior_a_mean
     prior_a = gaussian_prior(da, prior_a_cov, prior_a_mean)
-    q_a = gaussian_prior(da, init_a_cov, prior_a_mean)
+    q_a = gaussian_prior(da, init_a_cov, init_a_mean)
     prior_W = Wishart(df=prior_W_df, inv_scale=jnp.eye(d))
     q_W = prior_W
 

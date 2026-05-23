@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
-from jopa.data import load_mnist, rotate_image, rotating_mnist
+from jopa.data import load_mnist, rotating_mnist, rotation_sequence
 from jopa.em import variational_em
 from jopa.inference import infer
 
@@ -47,18 +47,11 @@ all_imgs, all_labs = load_mnist()
 digit_idx = np.where(all_labs == 8)[0][0]
 base_img = all_imgs[digit_idx]
 
-sequence = []
-for i in range(n_observed):
-    img = rotate_image(base_img, i * step_deg)
-    img = (img > 0.5 * img.max()).astype(np.float32) if img.max() > 0 else img
-    sequence.append(jnp.array(img))
-
-# Ground truth future frames for comparison
-gt_future = []
-for i in range(n_observed, n_observed + n_predicted):
-    img = rotate_image(base_img, i * step_deg)
-    img = (img > 0.5 * img.max()).astype(np.float32) if img.max() > 0 else img
-    gt_future.append(jnp.array(img))
+all_frames = rotation_sequence(
+    base_img, n_observed + n_predicted, step_deg=step_deg,
+)
+sequence = [jnp.array(f) for f in all_frames[:n_observed]]
+gt_future = [jnp.array(f) for f in all_frames[n_observed:]]
 
 # ── 3. Baseline: inference-only (frozen VAE) ────────────────────────────────
 print("\n── Baseline (frozen VAE) ──")

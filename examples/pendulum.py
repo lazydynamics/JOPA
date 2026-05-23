@@ -13,6 +13,7 @@ from jopa.envs import SimplePendulum
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
 from jopa.em import variational_em
 from jopa.inference import plan
+from jopa.distributions import near_identity_prior
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -64,17 +65,17 @@ except FileNotFoundError:
 
 # ── 3. Variational EM: learn A, B, W via message passing ─────────────────
 print("\n══ System Identification (Variational EM) ══")
-vec_I = jnp.eye(latent_dim).ravel()
 em_cache = os.path.join(CHECKPOINTS, "em_result_pendulum.pkl")
 
 em_hparams = dict(
     n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
-    beta_recon=1.0, prior_a_cov=0.5, init_a_cov=0.5,
-    prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+    beta_recon=1.0, prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+    **near_identity_prior(latent_dim, cov=0.5),
 )
 fingerprint = {
     "vae_mtime": os.path.getmtime(vae_path),
-    "hparams": em_hparams,
+    "hparams": {k: v for k, v in em_hparams.items()
+                if k not in ("prior_a_mean", "init_a_mean")},
 }
 
 result = None
@@ -95,7 +96,7 @@ if result is None:
     result = variational_em(
         model=model, params=params, trajectories=trajectories,
         latent_dim=latent_dim, action_dim=1,
-        prior_a_mean=vec_I, **em_hparams,
+        **em_hparams,
     )
     with open(em_cache, "wb") as f:
         pickle.dump({"fingerprint": fingerprint, "result": result}, f)

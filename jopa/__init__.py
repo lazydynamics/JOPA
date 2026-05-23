@@ -2,7 +2,7 @@
 from .distributions import (
     Gaussian, Wishart,
     combine_gaussians, gaussian_mean, gaussian_mean_cov, gaussian_prior,
-    wishart_mean,
+    near_identity_prior, wishart_mean,
 )
 from .inference import infer, plan, InferenceResult, PlanResult
 from .em import variational_em, EMResult
@@ -14,7 +14,7 @@ from . import nn
 __all__ = [
     "Gaussian", "Wishart",
     "combine_gaussians", "gaussian_mean", "gaussian_mean_cov",
-    "gaussian_prior", "wishart_mean",
+    "gaussian_prior", "near_identity_prior", "wishart_mean",
     "infer", "plan", "InferenceResult", "PlanResult",
     "variational_em", "EMResult",
     "CTMeta",

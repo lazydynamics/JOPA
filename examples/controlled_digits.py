@@ -10,6 +10,7 @@ import numpy as np
 
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
 from jopa.data import load_mnist, rotating_mnist, make_controlled_sequence
+from jopa.distributions import near_identity_prior
 from jopa.inference import infer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,23 +60,17 @@ print(f"  angle range: [{angles.min():.0f}°, {angles.max():.0f}°]")
 # ── 3. Learn A and B ──────────────────────────────────────────────────────
 print("\n── Learning A and B (prior: A ~ I) ──")
 
-vec_I = jnp.eye(latent_dim).ravel()
 n_predict = 80
 
 # Prior knowledge: dynamics is rotation-like (A ≈ I, tight cov), control
 # matrix B can be anything (wide prior).
-prior_kwargs = dict(
-    prior_a_mean=vec_I, prior_a_cov=0.1,
-    init_a_mean=vec_I,  init_a_cov=0.1,
-    prior_b_cov=10.0,   init_b_cov=100.0,
-)
-
 infer_kwargs = dict(
     encode_fn=encode_fn, decode_fn=decode_fn,
     latent_dim=latent_dim, action_dim=1,
     actions=jax_actions, n_predict=n_predict,
     n_iterations=100,
-    **prior_kwargs,
+    prior_b_cov=10.0, init_b_cov=100.0,
+    **near_identity_prior(latent_dim, cov=0.1),
 )
 
 result = infer(
