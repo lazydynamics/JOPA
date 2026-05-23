@@ -6,6 +6,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+import flax.serialization as serialization
 import optax
 import numpy as np
 from tqdm import tqdm
@@ -180,13 +181,31 @@ def make_encode_decode(model, params):
 # ---------------------------------------------------------------------------
 
 def save_params(params, path: str | Path):
-    flat = jax.tree.leaves(params)
-    np.savez(str(path), **{f"p{i}": np.asarray(v) for i, v in enumerate(flat)})
+    """Serialize VAE params via flax.serialization (name-mapped, msgpack)."""
+    with open(str(path), "wb") as f:
+        f.write(serialization.to_bytes(params))
 
 
 def load_params(model: VAE, path: str | Path) -> dict:
-    data = np.load(str(path))
+    """Load VAE params.
+
+    Reads the new flax msgpack format. Falls back to the legacy ``np.savez``
+    format (positional ``p0``, ``p1``, … keys) for checkpoints written by an
+    earlier version of this module.
+    """
+    path = str(path)
     rng = jax.random.PRNGKey(0)
-    params = model.init({"params": rng}, jnp.ones((1, 28, 28)), rng)
-    flat = [jnp.array(data[f"p{i}"]) for i in range(len(jax.tree.leaves(params)))]
-    return jax.tree.unflatten(jax.tree.structure(params), flat)
+    template = model.init({"params": rng}, jnp.ones((1, 28, 28)), rng)
+
+    with open(path, "rb") as f:
+        header = f.read(4)
+
+    # .npz is a ZIP archive — starts with "PK\x03\x04".
+    if header.startswith(b"PK"):
+        data = np.load(path)
+        leaves = jax.tree.leaves(template)
+        flat = [jnp.array(data[f"p{i}"]) for i in range(len(leaves))]
+        return jax.tree.unflatten(jax.tree.structure(template), flat)
+
+    with open(path, "rb") as f:
+        return serialization.from_bytes(template, f.read())
