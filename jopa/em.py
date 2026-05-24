@@ -209,6 +209,25 @@ def variational_em(
 
     # Accept either Trajectory or legacy dict form
     trajectories = [_as_trajectory(t) for t in trajectories]
+    for i, traj in enumerate(trajectories):
+        if traj.actions is None:
+            continue
+        if action_dim is None:
+            raise ValueError(
+                f"action_dim is required when any trajectory supplies actions "
+                f"(trajectory {i})."
+            )
+        n_trans = len(traj.observations) - 1
+        if len(traj.actions) != n_trans:
+            raise ValueError(
+                f"Trajectory {i}: expected {n_trans} actions (one per transition), "
+                f"got {len(traj.actions)}."
+            )
+        if len(traj.actions) and traj.actions[0].shape[-1] != action_dim:
+            raise ValueError(
+                f"Trajectory {i}: action_dim mismatch — got shape "
+                f"{traj.actions[0].shape}, expected last axis = {action_dim}."
+            )
 
     # Collect all images for M-step
     all_images = []
