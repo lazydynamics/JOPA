@@ -60,11 +60,47 @@ def rotate_image(image: np.ndarray, angle_deg: float) -> np.ndarray:
     return image[y_src, x_src] * valid
 
 
+def binarize(img: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+    """Per-frame binarize using the local max. Returns the all-zero image
+    untouched (avoids divide-by-zero on rotations that fall off-canvas)."""
+    mx = img.max()
+    if mx <= 0:
+        return img.astype(np.float32)
+    return (img > threshold * mx).astype(np.float32)
+
+
+def rotation_sequence(base_img: np.ndarray, n_frames: int,
+                      step_deg: float | None = None,
+                      total_deg: float = 360.0,
+                      binarize_threshold: float | None = 0.5) -> list:
+    """Generate a list of rotated views of ``base_img``.
+
+    Parameters
+    ----------
+    base_img : (H, W) array
+    n_frames : int
+    step_deg : float, optional
+        Angle between consecutive frames. If ``None``, uses
+        ``total_deg / n_frames`` so ``n_frames`` covers ``total_deg``.
+    binarize_threshold : float or None
+        If not ``None``, binarize each frame with this threshold (per-frame max).
+    """
+    if step_deg is None:
+        step_deg = total_deg / n_frames
+    frames = []
+    for i in range(n_frames):
+        rot = rotate_image(base_img, i * step_deg)
+        if binarize_threshold is not None:
+            rot = binarize(rot, binarize_threshold)
+        frames.append(rot.astype(np.float32))
+    return frames
+
+
 def rotating_mnist(
     n_digits: int = 10,
     n_rotations: int = 36,
     digits: tuple[int, ...] = (0, 1),
-    binarize: bool = True,
+    do_binarize: bool = True,
     threshold: float = 0.5,
 ):
     """Create a dataset of rotated MNIST digits.
@@ -90,7 +126,7 @@ def rotating_mnist(
     images = np.stack(images).astype(np.float32)
     labels = np.array(labels, dtype=int)
 
-    if binarize:
+    if do_binarize:
         images = (images > threshold * images.max()).astype(np.float32)
 
     return images, labels
@@ -99,7 +135,7 @@ def rotating_mnist(
 def make_controlled_sequence(
     digit_idx: int = 0,
     n_frames: int = 100,
-    binarize: bool = True,
+    do_binarize: bool = True,
     threshold: float = 0.5,
     seed: int = 0,
 ):
@@ -136,8 +172,8 @@ def make_controlled_sequence(
     frames = []
     for angle in angle_deg:
         rot = rotate_image(img, angle)
-        if binarize:
-            rot = (rot > threshold * rot.max()).astype(np.float32) if rot.max() > 0 else rot
+        if do_binarize:
+            rot = binarize(rot, threshold)
         frames.append(rot.astype(np.float32))
 
     actions = [np.array([v], dtype=np.float32) for v in velocities]

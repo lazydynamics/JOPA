@@ -15,10 +15,12 @@ dependencies = [
     "optax>=0.2",
     "numpy>=1.24",
     "tqdm>=4.60",
+    "pillow>=10.0",
 ]
 
 [project.optional-dependencies]
 viz = ["matplotlib>=3.8"]
+notebook = ["marimo>=0.14", "matplotlib>=3.8"]
 
 [tool.setuptools.packages.find]
 include = ["jopa*"]

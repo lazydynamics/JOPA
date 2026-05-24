@@ -95,13 +95,32 @@ def _e_step_trajectory(
     alphas, betas, _, _ = forward_backward(prior_x, vae_msgs, cache, actions)
     marginals = compute_marginals(alphas, betas, vae_msgs)
 
-    marginal_means, marginal_covs = [], []
-    for q in marginals:
-        mu, cov = gaussian_mean_cov(q)
-        marginal_means.append(mu)
-        marginal_covs.append(cov)
+    marginal_means, marginal_covs = jax.vmap(gaussian_mean_cov)(marginals)
+    return q_a, q_W, q_b, marginal_means, marginal_covs
 
-    return q_a, q_W, q_b, jnp.stack(marginal_means), jnp.stack(marginal_covs)
+
+# ---------------------------------------------------------------------------
+# Input container
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Trajectory:
+    """One trajectory's observations and (optional) actions.
+
+    ``observations`` is a list of images (each a (28, 28) array or ``None``
+    for missing frames); ``actions`` is a list of (du,) arrays, one per
+    transition, or ``None`` for autonomous dynamics.
+    """
+    observations: list
+    actions: list | None = None
+
+
+def _as_trajectory(t) -> Trajectory:
+    """Accept either a Trajectory or a dict with keys
+    ``observations``/``actions`` (legacy form)."""
+    if isinstance(t, Trajectory):
+        return t
+    return Trajectory(observations=t["observations"], actions=t.get("actions"))
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +149,9 @@ class EMResult:
 def variational_em(
     model,
     params: dict,
-    trajectories: Sequence[dict],
+    trajectories: Sequence["Trajectory | dict"],
     latent_dim: int,
     *,
-    transform_fn: Callable | None = None,
     action_dim: int | None = None,
     n_em_iterations: int = 20,
     n_vmp_iterations: int = 20,
@@ -144,6 +162,7 @@ def variational_em(
     prior_a_cov: float = PRIOR_A_COV,
     prior_a_mean: jnp.ndarray | None = None,
     init_a_cov: float = INIT_A_COV,
+    init_a_mean: jnp.ndarray | None = None,
     prior_b_cov: float = PRIOR_B_COV,
     init_b_cov: float = INIT_B_COV,
     seed: int = 0,
@@ -156,10 +175,15 @@ def variational_em(
     ----------
     model : VAE flax module
     params : initial VAE parameters
-    trajectories : list of dicts, each with:
-        - "observations": list of (28,28) images
-        - "actions": list of (du,) arrays (optional, len = T-1)
-    transform_fn : a → A reshape
+    trajectories : sequence of :class:`Trajectory` (or dict for legacy callers).
+        Each entry holds:
+          - ``observations``: list of (28, 28) images, or ``None`` for missing
+            frames.
+          - ``actions``: list of (du,) arrays, one per transition
+            (``len(actions) == len(observations) - 1``), or ``None`` for
+            autonomous dynamics.
+        Dicts with keys ``"observations"`` / ``"actions"`` are accepted and
+        normalised to :class:`Trajectory` internally.
     latent_dim : int
     action_dim : int, optional (required if trajectories have actions)
     """
@@ -167,13 +191,13 @@ def variational_em(
     da = d * d
     has_control = action_dim is not None
     rng = jax.random.PRNGKey(seed)
-    if transform_fn is None:
-        transform_fn = lambda a: a.reshape(d, d)
-    meta = CTMeta(transform_fn)
+    meta = CTMeta(lambda a: a.reshape(d, d))
 
     # Priors
+    if init_a_mean is None:
+        init_a_mean = prior_a_mean
     prior_a = gaussian_prior(da, prior_a_cov, prior_a_mean)
-    q_a = gaussian_prior(da, init_a_cov, prior_a_mean)
+    q_a = gaussian_prior(da, init_a_cov, init_a_mean)
     prior_W = Wishart(df=prior_W_df, inv_scale=jnp.eye(d))
     q_W = prior_W
 
@@ -183,10 +207,32 @@ def variational_em(
         prior_b = gaussian_prior(db, prior_b_cov)
         q_b = gaussian_prior(db, init_b_cov)
 
+    # Accept either Trajectory or legacy dict form
+    trajectories = [_as_trajectory(t) for t in trajectories]
+    for i, traj in enumerate(trajectories):
+        if traj.actions is None:
+            continue
+        if action_dim is None:
+            raise ValueError(
+                f"action_dim is required when any trajectory supplies actions "
+                f"(trajectory {i})."
+            )
+        n_trans = len(traj.observations) - 1
+        if len(traj.actions) != n_trans:
+            raise ValueError(
+                f"Trajectory {i}: expected {n_trans} actions (one per transition), "
+                f"got {len(traj.actions)}."
+            )
+        if len(traj.actions) and traj.actions[0].shape[-1] != action_dim:
+            raise ValueError(
+                f"Trajectory {i}: action_dim mismatch — got shape "
+                f"{traj.actions[0].shape}, expected last axis = {action_dim}."
+            )
+
     # Collect all images for M-step
     all_images = []
     for traj in trajectories:
-        all_images.extend(traj["observations"])
+        all_images.extend(traj.observations)
     images_batch = jnp.stack([jnp.array(img) for img in all_images])
 
     tx = optax.adam(lr)
@@ -205,14 +251,12 @@ def variational_em(
     pbar = tqdm(range(1, n_em_iterations + 1), desc="EM", disable=not verbose)
     for em_it in pbar:
         # --- E-step: run inference on each trajectory ---
-        encode_fn, _ = make_encode_decode(model, params)
+        encode_fn = make_encode_decode(model, params).encode
 
         all_post_means, all_post_covs = [], []
         for traj in trajectories:
-            obs = traj["observations"]
-            acts = traj.get("actions", None)
             q_a, q_W, q_b, pmeans, pcovs = _e_step_trajectory(
-                obs, acts, encode_fn, d,
+                traj.observations, traj.actions, encode_fn, d,
                 q_a, q_W, q_b, prior_a, prior_W, prior_b,
                 meta, n_vmp_iterations,
             )
@@ -231,7 +275,7 @@ def variational_em(
             loss_history.append(float(loss))
 
         ma = gaussian_mean(q_a)
-        mA = transform_fn(ma)
+        mA = meta.f(ma)
         det_A = float(jnp.linalg.det(mA))
         det_history.append(det_A)
         eigenvalues_history.append(np.linalg.eigvals(np.array(mA)))
@@ -257,7 +301,7 @@ def variational_em(
     return EMResult(
         params=params,
         q_a=q_a, q_W=q_W, q_b=q_b,
-        transition_matrix=transform_fn(ma),
+        transition_matrix=meta.f(ma),
         transition_precision=mW,
         control_matrix=control_matrix,
         loss_history=loss_history,

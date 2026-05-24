@@ -263,6 +263,8 @@ def config():
 
 @app.cell
 def generate_data(SimplePendulum, jnp, np):
+    from jopa.em import Trajectory
+
     env = SimplePendulum()
     _n_traj = 10
     _traj_len = 80
@@ -278,9 +280,9 @@ def generate_data(SimplePendulum, jnp, np):
             _acts.append(jnp.array([_torque]))
             env.step(_torque)
             _obs.append(jnp.array(env.render()))
-        trajectories.append({"observations": _obs, "actions": _acts})
+        trajectories.append(Trajectory(observations=_obs, actions=_acts))
 
-    n_frames = sum(len(t["observations"]) for t in trajectories)
+    n_frames = sum(len(t.observations) for t in trajectories)
     return env, n_frames, trajectories
 
 
@@ -335,8 +337,8 @@ def train_vae_cell(
 
     def _vae_callback(_epoch, _cb_params, _loss):
         if _epoch == 1 or _epoch % 5 == 0:
-            _enc, _dec = make_encode_decode(model, _cb_params)
-            _recons = [np.array(_dec(_enc(jnp.array(_img))[0])) for _img in vae_sample_imgs]
+            _v = make_encode_decode(model, _cb_params)
+            _recons = [np.array(_v.decode(_v.encode(jnp.array(_img))[0])) for _img in vae_sample_imgs]
             vae_snapshots.append({"epoch": _epoch, "recons": _recons, "loss": float(_loss)})
 
     try:
@@ -344,7 +346,7 @@ def train_vae_cell(
     except FileNotFoundError:
         _all_frames = []
         for _traj in trajectories:
-            _all_frames.extend([np.array(o) for o in _traj["observations"]])
+            _all_frames.extend([np.array(o) for o in _traj.observations])
         for _theta in np.linspace(-np.pi, np.pi, 200):
             _env.reset(theta=_theta, theta_dot=0.0)
             _all_frames.append(_env.render())
@@ -356,8 +358,8 @@ def train_vae_cell(
         save_params(params, _vae_path)
 
     if not vae_snapshots:
-        _enc, _dec = make_encode_decode(model, params)
-        _recons = [np.array(_dec(_enc(jnp.array(_img))[0])) for _img in vae_sample_imgs]
+        _v = make_encode_decode(model, params)
+        _recons = [np.array(_v.decode(_v.encode(jnp.array(_img))[0])) for _img in vae_sample_imgs]
         vae_snapshots.append({"epoch": 100, "recons": _recons, "loss": None})
     return model, params, vae_sample_imgs, vae_snapshots
 
@@ -431,12 +433,13 @@ def vae_gif(mo, np, vae_sample_imgs, vae_snapshots):
     import io as _io
 
     if len(vae_snapshots) > 1:
+        # Originals row + separator are constant across snapshots — hoist out
+        _row_orig = np.hstack(vae_sample_imgs)
+        _sep = np.ones((2, _row_orig.shape[1])) * 0.3
         _pil_frames = []
         for _snap in vae_snapshots:
-            # Stitch originals (top) + reconstructions (bottom) into one wide frame
-            _row_orig = np.hstack(vae_sample_imgs)
             _row_recon = np.hstack(_snap["recons"])
-            _combined = np.vstack([_row_orig, np.ones((2, _row_orig.shape[1])) * 0.3, _row_recon])
+            _combined = np.vstack([_row_orig, _sep, _row_recon])
             _uint8 = np.clip(_combined * 255, 0, 255).astype(np.uint8)
             _pil_frames.append(_PILImage.fromarray(_uint8, "L").resize(
                 (_uint8.shape[1] * 3, _uint8.shape[0] * 3), _PILImage.NEAREST))
@@ -504,59 +507,72 @@ def sysid_cell(
     trajectories,
     variational_em,
 ):
+    import os as _os
     import pickle as _pickle
 
-    _traj0_obs = trajectories[0]["observations"]
-    _traj0_acts = trajectories[0]["actions"]
+    _traj0_obs = trajectories[0].observations
+    _traj0_acts = trajectories[0].actions
     _sample_indices = [0, 10, 20, 35, 50]
     sample_pairs = [(jnp.array(_traj0_obs[i]), jnp.array(_traj0_obs[i + 1])) for i in _sample_indices]
     sample_actions = [_traj0_acts[i] for i in _sample_indices]
 
     _cache_path = "checkpoints/em_result_raw_torque.pkl"
+    _vae_path = "checkpoints/vae_pendulum_d4.npz"
     _vec_I = jnp.eye(latent_dim).ravel()
 
-    # Try loading cached EM result
-    _loaded = False
+    # Fingerprint = (VAE checkpoint mtime, EM hyperparams). Cache invalidates
+    # if the VAE was retrained or hyperparameters changed.
+    _em_hparams = dict(
+        n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
+        beta_recon=1.0, prior_a_cov=0.5, init_a_cov=0.5,
+        prior_b_cov=10.0, init_b_cov=100.0, seed=42,
+    )
+    _vae_mtime = _os.path.getmtime(_vae_path) if _os.path.exists(_vae_path) else None
+    _fingerprint = {"vae_mtime": _vae_mtime, "hparams": _em_hparams}
+
+    result, em_snapshots, _loaded = None, None, False
     try:
         with open(_cache_path, "rb") as _f:
             _cached = _pickle.load(_f)
-        result = _cached["result"]
-        em_snapshots = _cached["em_snapshots"]
-        _loaded = True
-        print(f"Loaded cached EM result from {_cache_path}")
-    except (FileNotFoundError, Exception):
+        if _cached.get("fingerprint") == _fingerprint:
+            result = _cached["result"]
+            em_snapshots = _cached["em_snapshots"]
+            _loaded = True
+            print(f"Loaded cached EM result from {_cache_path}")
+        else:
+            print(f"Cache fingerprint mismatch at {_cache_path}; recomputing")
+    except FileNotFoundError:
         pass
+    except (_pickle.UnpicklingError, EOFError, KeyError) as _e:
+        print(f"Cache at {_cache_path} unreadable ({_e!r}); recomputing")
 
     if not _loaded:
         em_snapshots = []
 
         def _em_callback(_it, _cb_params, _mA, _mB, _loss, _det_A):
-            _enc, _dec = make_encode_decode(model, _cb_params)
+            _v = make_encode_decode(model, _cb_params)
             _preds = []
             for (_img_t, _), _u_t in zip(sample_pairs, sample_actions):
-                _z_t, _ = _enc(_img_t)
+                _z_t, _ = _v.encode(_img_t)
                 _z_next = _mA @ _z_t
                 if _mB is not None:
                     _z_next = _z_next + _mB @ _u_t
-                _preds.append(np.array(_dec(_z_next)))
+                _preds.append(np.array(_v.decode(_z_next)))
             em_snapshots.append({"preds": _preds, "loss": float(_loss), "det_A": float(_det_A)})
 
         result = variational_em(
             model=model, params=params, trajectories=trajectories,
             latent_dim=latent_dim, action_dim=1,
-            n_em_iterations=30, n_vmp_iterations=10, n_m_steps=20, lr=5e-5,
-            beta_recon=1.0, prior_a_mean=_vec_I, prior_a_cov=0.5, init_a_cov=0.5,
-            prior_b_cov=10.0, init_b_cov=100.0, seed=42,
-            callback=_em_callback,
+            prior_a_mean=_vec_I, callback=_em_callback,
+            **_em_hparams,
         )
 
-        # Cache for next time
-        try:
-            with open(_cache_path, "wb") as _f:
-                _pickle.dump({"result": result, "em_snapshots": em_snapshots}, _f)
-            print(f"Saved EM result to {_cache_path}")
-        except Exception:
-            pass
+        with open(_cache_path, "wb") as _f:
+            _pickle.dump(
+                {"fingerprint": _fingerprint, "result": result, "em_snapshots": em_snapshots},
+                _f,
+            )
+        print(f"Saved EM result to {_cache_path}")
 
     det_A = float(jnp.linalg.det(result.transition_matrix))
     eig_mods = np.abs(np.linalg.eigvals(np.array(result.transition_matrix)))
@@ -670,11 +686,13 @@ def em_gif(em_actuals, em_snapshots, mo, np):
     from PIL import Image as _PILImage
     import io as _io
 
+    # Ground-truth row + separator are constant across iterations — hoist out
+    _row_actual = np.hstack(em_actuals)
+    _sep = np.ones((2, _row_actual.shape[1])) * 0.3
     _pil_frames = []
     for _snap in em_snapshots:
-        _row_actual = np.hstack(em_actuals)
         _row_pred = np.hstack(_snap["preds"])
-        _combined = np.vstack([_row_actual, np.ones((2, _row_actual.shape[1])) * 0.3, _row_pred])
+        _combined = np.vstack([_row_actual, _sep, _row_pred])
         _uint8 = np.clip(_combined * 255, 0, 255).astype(np.uint8)
         _pil_frames.append(_PILImage.fromarray(_uint8, "L").resize(
             (_uint8.shape[1] * 3, _uint8.shape[0] * 3), _PILImage.NEAREST))
@@ -718,74 +736,46 @@ Same `ct_marginal_yx` that produces messages for learning A, B, W now produces m
 
 
 @app.cell
-def run_all_plans(
-    SimplePendulum, jnp, latent_dim, make_encode_decode,
+def run_plan(
+    SimplePendulum, jnp, make_encode_decode,
     model, np, params_em, plan, result,
 ):
-    """Pre-compute planning results for three target angles."""
-    _encode_fn, _decode_fn = make_encode_decode(model, params_em)
+    """Receding-horizon swing-up to θ=π."""
+    _vae = make_encode_decode(model, params_em)
+    goal_theta = np.pi
+    _exec_steps = 2
+    _n_replans = 11
 
-    # Each target has its own optimal exec_steps (see diagnostics)
-    _targets = [
-        {"label": "θ = π (swing to top)", "goal": np.pi, "exec_steps": 2, "n_replans": 11},
-    ]
+    _env = SimplePendulum()
+    _env.reset(theta=0.0, theta_dot=0.0)
+    _states = [_env.state.copy()]
+    _frames = [_env.render()]
+    _torques = []
 
-    plan_results = {}
-    for _tgt in _targets:
-        _env = SimplePendulum()
-        _env.reset(theta=0.0, theta_dot=0.0)
-        _states = [_env.state.copy()]
-        _frames = [_env.render()]
-        _torques = []
+    _env_g = SimplePendulum()
+    _env_g.reset(theta=goal_theta, theta_dot=0.0)
+    _goal_img = jnp.array(_env_g.render())
 
-        _env_g = SimplePendulum()
-        _env_g.reset(theta=_tgt["goal"], theta_dot=0.0)
-        _goal_img = jnp.array(_env_g.render())
+    for _ in range(_n_replans):
+        _current_img = jnp.array(_env.render())
+        _obs_plan = [_current_img] + [None] * 6 + [_goal_img]
+        _pr = plan(
+            observations=_obs_plan,
+            vae=_vae,
+            q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
+            action_dim=1,
+            n_iterations=200, verbose=False,
+        )
+        for _i in range(min(_exec_steps, len(_pr.actions))):
+            _t = float(_pr.actions[_i][0])
+            _torques.append(_t)
+            _env.step(_t)
+            _states.append(_env.state.copy())
+            _frames.append(_env.render())
 
-        for _cycle in range(_tgt["n_replans"]):
-            _current_img = jnp.array(_env.render())
-            _obs_plan = [_current_img] + [None] * 6 + [_goal_img]
-            _pr = plan(
-                observations=_obs_plan,
-                encode_fn=_encode_fn, decode_fn=_decode_fn,
-                q_a=result.q_a, q_W=result.q_W, q_b=result.q_b,
-                latent_dim=latent_dim, action_dim=1,
-                n_iterations=200, verbose=False,
-            )
-            for _i in range(min(_tgt["exec_steps"], len(_pr.actions))):
-                _t = float(_pr.actions[_i][0])
-                _torques.append(_t)
-                _env.step(_t)
-                _states.append(_env.state.copy())
-                _frames.append(_env.render())
-
-        plan_results[_tgt["label"]] = {
-            "goal_theta": _tgt["goal"],
-            "sim_states_arr": np.array(_states),
-            "sim_frames": _frames,
-            "all_torques": _torques,
-        }
-
-    return (plan_results,)
-
-
-@app.cell
-def goal_picker(mo, plan_results):
-    goal_dropdown = mo.ui.dropdown(
-        options=list(plan_results.keys()),
-        value="θ = π (swing to top)",
-        label="**Target angle**",
-    )
-    goal_dropdown
-
-
-@app.cell
-def unpack_plan(plan_results, goal_dropdown, np):
-    _sel = plan_results[goal_dropdown.value]
-    goal_theta = _sel["goal_theta"]
-    sim_states_arr = _sel["sim_states_arr"]
-    sim_frames = _sel["sim_frames"]
-    all_torques = _sel["all_torques"]
+    sim_states_arr = np.array(_states)
+    sim_frames = _frames
+    all_torques = _torques
     return (goal_theta, sim_states_arr, sim_frames, all_torques)
 
 

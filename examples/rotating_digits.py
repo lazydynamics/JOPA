@@ -12,7 +12,7 @@ import numpy as np
 
 from jopa.inference import infer
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
-from jopa.data import load_mnist, rotate_image, rotating_mnist
+from jopa.data import load_mnist, rotating_mnist, rotation_sequence
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -41,7 +41,7 @@ except FileNotFoundError:
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
-encode_fn, decode_fn = make_encode_decode(model, params)
+vae = make_encode_decode(model, params)
 
 # ── 3. Inference ───────────────────────────────────────────────────────────
 # Build observation sequence: 100 rotated frames of one digit
@@ -54,18 +54,12 @@ all_imgs, all_labs = load_mnist()
 digit_idx = np.where(all_labs == 8)[0][4]
 base_img = all_imgs[digit_idx]
 
-sequence = []
-for i in range(n_observed):
-    img = rotate_image(base_img, i * step_deg)
-    img = (img > 0.5 * img.max()).astype(np.float32) if img.max() > 0 else img
-    sequence.append(jnp.array(img))
+sequence = [jnp.array(f) for f in rotation_sequence(base_img, n_observed, step_deg=step_deg)]
 
 print(f"Running inference ({n_observed} observed + {n_predicted} predicted) …")
 result = infer(
     observations=sequence,
-    encode_fn=encode_fn,
-    decode_fn=decode_fn,
-    latent_dim=4,
+    vae=vae,
     n_predict=n_predicted,
     n_iterations=50,
 )

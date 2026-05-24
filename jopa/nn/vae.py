@@ -1,11 +1,12 @@
 """Convolutional VAE for learning smooth latent representations of spatial data."""
 from __future__ import annotations
-from typing import Callable
+from typing import Callable, NamedTuple
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+import flax.serialization as serialization
 import optax
 import numpy as np
 from tqdm import tqdm
@@ -128,18 +129,19 @@ def train_vae(
         updates, opt_state = tx.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), opt_state, loss
 
-    n = images.shape[0]
+    images_jax = jnp.asarray(images)
+    n = images_jax.shape[0]
     pbar = tqdm(range(1, epochs + 1), desc="VAE", disable=not verbose)
     for epoch in pbar:
         rng, perm_rng = jax.random.split(rng)
-        imgs = images[jax.random.permutation(perm_rng, n)]
+        imgs = images_jax[jax.random.permutation(perm_rng, n)]
         beta = min(1.0, 0.1 + 0.9 * (epoch - 1) / 15)
 
         losses = []
         for i in range(0, n, batch_size):
             rng, z_rng = jax.random.split(rng)
             params, opt_state, loss = step(
-                params, opt_state, jnp.array(imgs[i : i + batch_size]), z_rng, beta,
+                params, opt_state, imgs[i : i + batch_size], z_rng, beta,
             )
             losses.append(float(loss))
 
@@ -155,19 +157,35 @@ def train_vae(
 # Encode / decode helpers
 # ---------------------------------------------------------------------------
 
-def make_encode_decode(model, params):
-    """Create jitted single-image encode/decode functions from a VAE."""
+class VAEAdapter(NamedTuple):
+    """Bundle of jitted ``encode``/``decode`` closures and ``latent_dim``.
+
+    Returned by :func:`make_encode_decode`; consumed by
+    :func:`jopa.inference.infer` and :func:`jopa.inference.plan` so callers
+    pass a single object instead of three separate arguments.
+    """
+    encode: Callable
+    decode: Callable
+    latent_dim: int
+
+
+def make_encode_decode(model, params) -> "VAEAdapter":
+    """Create a :class:`VAEAdapter` from a trained VAE.
+
+    The encoder clips ``log_std`` to ``LOG_STD_CLIP`` to match training.
+    """
 
     @jax.jit
     def encode_fn(image):
         mu, ls = model.apply(params, image.reshape(1, 28, 28), method=model.encode)
+        ls = jnp.clip(ls, *LOG_STD_CLIP)
         return mu[0], ls[0]
 
     @jax.jit
     def decode_fn(z):
         return model.apply(params, z.reshape(1, -1), method=model.decode)[0].reshape(28, 28)
 
-    return encode_fn, decode_fn
+    return VAEAdapter(encode=encode_fn, decode=decode_fn, latent_dim=model.latent_dim)
 
 
 # ---------------------------------------------------------------------------
@@ -175,13 +193,31 @@ def make_encode_decode(model, params):
 # ---------------------------------------------------------------------------
 
 def save_params(params, path: str | Path):
-    flat = jax.tree.leaves(params)
-    np.savez(str(path), **{f"p{i}": np.asarray(v) for i, v in enumerate(flat)})
+    """Serialize VAE params via flax.serialization (name-mapped, msgpack)."""
+    with open(str(path), "wb") as f:
+        f.write(serialization.to_bytes(params))
 
 
 def load_params(model: VAE, path: str | Path) -> dict:
-    data = np.load(str(path))
+    """Load VAE params.
+
+    Reads the new flax msgpack format. Falls back to the legacy ``np.savez``
+    format (positional ``p0``, ``p1``, … keys) for checkpoints written by an
+    earlier version of this module.
+    """
+    path = str(path)
     rng = jax.random.PRNGKey(0)
-    params = model.init({"params": rng}, jnp.ones((1, 28, 28)), rng)
-    flat = [jnp.array(data[f"p{i}"]) for i in range(len(jax.tree.leaves(params)))]
-    return jax.tree.unflatten(jax.tree.structure(params), flat)
+    template = model.init({"params": rng}, jnp.ones((1, 28, 28)), rng)
+
+    with open(path, "rb") as f:
+        header = f.read(4)
+
+    # .npz is a ZIP archive — starts with "PK\x03\x04".
+    if header.startswith(b"PK"):
+        data = np.load(path)
+        leaves = jax.tree.leaves(template)
+        flat = [jnp.array(data[f"p{i}"]) for i in range(len(leaves))]
+        return jax.tree.unflatten(jax.tree.structure(template), flat)
+
+    with open(path, "rb") as f:
+        return serialization.from_bytes(template, f.read())
