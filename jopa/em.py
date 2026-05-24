@@ -149,7 +149,7 @@ class EMResult:
 def variational_em(
     model,
     params: dict,
-    trajectories: Sequence[dict],
+    trajectories: Sequence["Trajectory | dict"],
     latent_dim: int,
     *,
     action_dim: int | None = None,
@@ -175,9 +175,15 @@ def variational_em(
     ----------
     model : VAE flax module
     params : initial VAE parameters
-    trajectories : list of dicts, each with:
-        - "observations": list of (28,28) images
-        - "actions": list of (du,) arrays (optional, len = T-1)
+    trajectories : sequence of :class:`Trajectory` (or dict for legacy callers).
+        Each entry holds:
+          - ``observations``: list of (28, 28) images, or ``None`` for missing
+            frames.
+          - ``actions``: list of (du,) arrays, one per transition
+            (``len(actions) == len(observations) - 1``), or ``None`` for
+            autonomous dynamics.
+        Dicts with keys ``"observations"`` / ``"actions"`` are accepted and
+        normalised to :class:`Trajectory` internally.
     latent_dim : int
     action_dim : int, optional (required if trajectories have actions)
     """

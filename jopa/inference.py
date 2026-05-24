@@ -87,9 +87,11 @@ def infer(
     ----------
     observations : list of arrays or None
         Observed images; ``None`` entries are missing (unobserved).
-    encode_fn : (image) → (mean, log_std)
-    decode_fn : (z) → image
-    latent_dim : int
+    vae : :class:`jopa.nn.vae.VAEAdapter`
+        Bundle of jitted ``encode``/``decode`` closures plus ``latent_dim``,
+        as returned by :func:`jopa.nn.vae.make_encode_decode`. ``encode``
+        maps an image to ``(mean, log_std)``; ``decode`` maps a latent ``z``
+        back to an image.
     actions : list of (du,) arrays, optional
         Control inputs u[t] for t=0..T_obs-2 (one per transition).
         Length must be T_obs - 1.
@@ -192,7 +194,7 @@ def infer(
 @dataclass
 class PlanResult:
     """Holds planning outputs."""
-    actions: list[jnp.ndarray]         # inferred action sequence
+    actions: jnp.ndarray               # (n_ct, du) inferred action sequence
     latent_means: jnp.ndarray          # (T, d) planned trajectory
     predictions: list                  # decoded images for each step
 
