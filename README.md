@@ -60,7 +60,6 @@ It shares the spirit — perception and action as inference on a generative mode
 - **VAE pre-training is not message passing.** The observation model uses gradient descent. The EM refines it, but the initial representation comes from deep learning.
 - **No velocity from a single image.** Can swing to a target but can't stabilise — a single frame doesn't encode angular velocity.
 - **Linear dynamics.** Works when the VAE learns a good representation, breaks when it doesn't. Planning fails for some goal angles due to latent space topology.
-- **Slow E-step.** Python loops over small matrices. The proper fix (JIT the full VMP loop) is an open problem.
 - **Training variance.** Results depend on VAE initialisation. No automated validation that a checkpoint is good enough for planning.
 
 ## Contributing
@@ -78,9 +77,10 @@ Pick one, open a PR, and we'll review it.
 
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
-uv pip install -e .
+uv pip install -e .                       # core + examples
 uv run python examples/pendulum.py        # swing-up demo
-uv run marimo run notebook.py              # interactive notebook
+uv pip install -e ".[notebook]"           # adds marimo + matplotlib
+uv run marimo run notebook.py             # interactive notebook
 ```
 
 ## Structure
