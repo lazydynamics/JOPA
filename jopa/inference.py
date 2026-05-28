@@ -15,20 +15,17 @@ from tqdm import tqdm
 
 from .distributions import (
     Gaussian, Wishart,
-    combine_gaussians, gaussian_mean, gaussian_mean_cov, gaussian_prior,
+    gaussian_mean, gaussian_mean_cov, gaussian_prior,
     vague_gaussian, wishart_mean,
 )
 from .defaults import (
     PRIOR_W_DF, PRIOR_A_COV, PRIOR_B_COV, INIT_A_COV, INIT_B_COV,
 )
-from .nodes.transition import (
-    CTMeta, CTCache,
-    ct_marginal_yx, ct_message_u,
-)
+from .nodes.transition import CTMeta, CTCache
 from .nodes.observation import vae_predict
 from .message_passing import (
     encode_observations, forward_backward,
-    accumulate_vmp_messages, compute_marginals,
+    accumulate_vmp_messages, compute_marginals, infer_actions,
 )
 
 
@@ -207,6 +204,7 @@ def plan(
     q_b: Gaussian,
     action_dim: int,
     *,
+    prior_x: Gaussian | None = None,
     n_iterations: int = 50,
     verbose: bool = True,
 ) -> PlanResult:
@@ -222,6 +220,11 @@ def plan(
         Images at each time step. None = no observation (action is free).
         Typically: [start_image, None, ..., None, goal_image].
     q_a, q_W, q_b : learned model parameters (fixed).
+    prior_x : Gaussian, optional
+        Belief over the initial state x₀. Defaults to N(0, I). Pass a carried
+        filter belief here for online receding-horizon control — the current
+        state (incl. velocity-like latent dims) then comes from the belief
+        rather than a single re-encoded frame.
 
     Notes
     -----
@@ -238,60 +241,42 @@ def plan(
     """
     encode_fn, decode_fn, d = vae.encode, vae.decode, vae.latent_dim
     du = action_dim
-    T = len(observations)
     meta = CTMeta(lambda a: a.reshape(d, d))
-    n_ct = T - 1
 
     vae_msgs = encode_observations(observations, encode_fn, d)
 
     cache = CTCache(q_a, q_W, meta, q_b)
-    prior_x = Gaussian(eta=jnp.zeros(d), lam=jnp.eye(d))
+    if prior_x is None:
+        prior_x = Gaussian(eta=jnp.zeros(d), lam=jnp.eye(d))
+        start_mean = None
+    else:
+        start_mean = gaussian_mean(prior_x)
 
-    # Action prior derived from the observed start→goal latent shift —
-    # see docstring. Uses the first and last *observed* timesteps as
-    # anchors; falls back to identity-scale prior on B·u if fewer than
-    # two observations are provided.
+    # Action prior derived from the start→goal latent shift — see docstring.
+    # Start anchor is the carried belief mean (if given) else the first
+    # observed frame; goal anchor is the last observed frame. Falls back to
+    # an identity-scale prior on B·u if no shift can be measured.
     mB = gaussian_mean(q_b).reshape(d, du)
     b_col_var = jnp.sum(mB ** 2, axis=0) + 1e-8
 
     present = [i for i, o in enumerate(observations) if o is not None]
-    if len(present) >= 2:
-        mu_start = gaussian_mean(vae_msgs[present[0]])
-        mu_end = gaussian_mean(vae_msgs[present[-1]])
-        latent_shift_sq = jnp.sum((mu_end - mu_start) ** 2)
-        latent_shift_sq = jnp.maximum(latent_shift_sq, 1e-8)
+    mu_start, mu_end = None, None
+    if start_mean is not None and present:
+        mu_start, mu_end = start_mean, gaussian_mean(vae_msgs[present[-1]])
+    elif len(present) >= 2:
+        mu_start, mu_end = gaussian_mean(vae_msgs[present[0]]), gaussian_mean(vae_msgs[present[-1]])
+    if mu_start is not None:
+        latent_shift_sq = jnp.maximum(jnp.sum((mu_end - mu_start) ** 2), 1e-8)
     else:
         latent_shift_sq = jnp.array(1.0)
 
     prior_u_lam = jnp.diag(b_col_var / latent_shift_sq)
     prior_u = Gaussian(eta=jnp.zeros(du), lam=prior_u_lam)
 
-    # Initialise action posteriors at the prior, stacked along axis 0
-    q_us = Gaussian(
-        eta=jnp.broadcast_to(prior_u.eta, (n_ct, du)),
-        lam=jnp.broadcast_to(prior_u.lam, (n_ct, du, du)),
-    )
-
-    def _action_update(m_y, m_x, u):
-        q_yx = ct_marginal_yx(m_y, m_x, cache, u)
-        msg_u = ct_message_u(q_yx, cache)
-        return combine_gaussians(prior_u, msg_u)
-    _vmapped_action_update = jax.vmap(_action_update)
-
-    pbar = tqdm(range(n_iterations), desc="Plan", disable=not verbose)
-    for _ in pbar:
-        u_means = jax.vmap(gaussian_mean)(q_us)             # (n_ct, du)
-        _, _, m_xs, m_ys = forward_backward(prior_x, vae_msgs, cache, u_means)
-        q_us = _vmapped_action_update(m_ys, m_xs, u_means)
-
-        u_norms = jnp.linalg.norm(jax.vmap(gaussian_mean)(q_us), axis=-1)
-        pbar.set_postfix({
-            "mean|u|": f"{float(u_norms.mean()):.4f}",
-            "max|u|": f"{float(u_norms.max()):.4f}",
-        })
+    u_means = infer_actions(prior_x, vae_msgs, cache, prior_u,
+                            n_iterations=n_iterations, verbose=verbose)
 
     # Final marginals with converged actions
-    u_means = jax.vmap(gaussian_mean)(q_us)                  # (n_ct, du)
     alphas, betas, _, _ = forward_backward(prior_x, vae_msgs, cache, u_means)
     marginals = compute_marginals(alphas, betas, vae_msgs)
     lat_means = jax.vmap(gaussian_mean)(marginals)

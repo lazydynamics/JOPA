@@ -15,14 +15,15 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+from tqdm import tqdm
 
 from .distributions import (
     Gaussian, Wishart,
-    combine_gaussians, vague_gaussian,
+    combine_gaussians, gaussian_mean, vague_gaussian,
 )
 from .nodes.transition import (
     ct_forward, ct_backward, ct_marginal_yx,
-    ct_message_a, ct_message_b, ct_message_W,
+    ct_message_a, ct_message_b, ct_message_u, ct_message_W,
 )
 
 
@@ -241,3 +242,42 @@ def compute_marginals(alphas, betas, vae_msgs):
     if isinstance(vae_msgs, list):
         vae_msgs = _stack_gaussians(vae_msgs)
     return _marginals_vmap(alphas, betas, vae_msgs)
+
+
+# ---------------------------------------------------------------------------
+# Planning-as-inference — VMP on the action sequence (the missing MID rung)
+# ---------------------------------------------------------------------------
+
+def infer_actions(prior_x, vae_msgs, cache, prior_u, n_iterations=50, verbose=False):
+    """Infer the action sequence by VMP on the actions: at each iteration,
+    run forward-backward through the chain with the current action means,
+    then update each action posterior from its CT-factor message + prior.
+
+    Used by both ``inference.plan`` and ``blocks.JointModel.plan`` so the
+    action-inference loop lives in one place (no parallel implementations).
+    """
+    T = len(vae_msgs) if isinstance(vae_msgs, list) else vae_msgs.eta.shape[0]
+    n_ct = T - 1
+    du = prior_u.eta.shape[0]
+
+    q_us = Gaussian(
+        eta=jnp.broadcast_to(prior_u.eta, (n_ct, du)),
+        lam=jnp.broadcast_to(prior_u.lam, (n_ct, du, du)),
+    )
+
+    def _update(m_y, m_x, u):
+        q_yx = ct_marginal_yx(m_y, m_x, cache, u)
+        return combine_gaussians(prior_u, ct_message_u(q_yx, cache))
+    vupd = jax.vmap(_update)
+
+    pbar = tqdm(range(n_iterations), desc="Plan", disable=not verbose)
+    for _ in pbar:
+        u_means = jax.vmap(gaussian_mean)(q_us)
+        _, _, m_xs, m_ys = forward_backward(prior_x, vae_msgs, cache, u_means)
+        q_us = vupd(m_ys, m_xs, u_means)
+        if verbose:
+            norms = jnp.linalg.norm(jax.vmap(gaussian_mean)(q_us), axis=-1)
+            pbar.set_postfix(mean_u=f"{float(norms.mean()):.4f}",
+                             max_u=f"{float(norms.max()):.4f}")
+
+    return jax.vmap(gaussian_mean)(q_us)
