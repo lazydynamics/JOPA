@@ -10,7 +10,8 @@ import os
 import jax.numpy as jnp
 import numpy as np
 
-from jopa.inference import infer
+from jopa.distributions import Gaussian
+from jopa.blocks import JointModel, Block, LearnedLinear, Frozen
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
 from jopa.data import load_mnist, rotating_mnist, rotation_sequence
 
@@ -56,16 +57,20 @@ base_img = all_imgs[digit_idx]
 
 sequence = [jnp.array(f) for f in rotation_sequence(base_img, n_observed, step_deg=step_deg)]
 
+def _vae_msg(image):
+    mu, log_std = vae.encode(image)
+    lam = jnp.diag(1.0 / jnp.exp(2.0 * log_std))
+    return Gaussian(eta=lam @ mu, lam=lam)
+
 print(f"Running inference ({n_observed} observed + {n_predicted} predicted) …")
-result = infer(
-    observations=sequence,
-    vae=vae,
-    n_predict=n_predicted,
-    n_iterations=50,
-)
+block = Block("z", LearnedLinear(dim=4, n_iterations=50),
+              observe=Frozen(_vae_msg, vae.decode))
+model = JointModel([block])
+model.learn([{"z": sequence}])
+out = model.smooth({"z": sequence}, n_predict=n_predicted)["z"]
 
 # ── 4. Results ─────────────────────────────────────────────────────────────
-H = result.transition_matrix
+H = block.transition.A
 angle = float(jnp.arctan2(H[1, 0], H[0, 0]) * 180 / jnp.pi)
 det = float(jnp.linalg.det(H))
 
@@ -80,12 +85,12 @@ try:
     fig, axes = plt.subplots(2, 10, figsize=(20, 4))
     for i, ax in enumerate(axes[0]):
         idx = i * (n_observed // 10)
-        ax.imshow(np.array(result.predictions[idx]).reshape(28, 28), cmap="gray")
+        ax.imshow(np.array(out["predictions"][idx]).reshape(28, 28), cmap="gray")
         ax.set_title(f"obs {idx}", fontsize=8)
         ax.axis("off")
     for i, ax in enumerate(axes[1]):
         idx = n_observed + i * (n_predicted // 10)
-        ax.imshow(np.array(result.predictions[idx]).reshape(28, 28), cmap="inferno")
+        ax.imshow(np.array(out["predictions"][idx]).reshape(28, 28), cmap="inferno")
         ax.set_title(f"pred +{idx - n_observed}", fontsize=8, color="red")
         ax.axis("off")
     fig.suptitle("Observations (top) vs Predictions (bottom)")
@@ -94,9 +99,9 @@ try:
     print(f"Saved {OUTPUTS}/rotating_digits_result.png")
 
     # Latent trajectory
-    d = result.latent_means.shape[1]
-    means = np.array(result.latent_means)
-    stds = np.sqrt(np.diagonal(np.array(result.latent_covs), axis1=-2, axis2=-1))
+    means = np.array(out["means"])
+    stds = np.sqrt(np.diagonal(np.array(out["covs"]), axis1=-2, axis2=-1))
+    d = means.shape[1]
     t = np.arange(means.shape[0])
 
     fig2, axes2 = plt.subplots(1, d, figsize=(4 * d, 4))

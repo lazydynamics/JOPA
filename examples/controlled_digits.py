@@ -10,8 +10,8 @@ import numpy as np
 
 from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
 from jopa.data import load_mnist, rotating_mnist, make_controlled_sequence
-from jopa.distributions import near_identity_prior
-from jopa.inference import infer
+from jopa.distributions import Gaussian, near_identity_prior
+from jopa.blocks import JointModel, Block, LearnedLinear, Frozen
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -62,24 +62,27 @@ print("\n── Learning A and B (prior: A ~ I) ──")
 
 n_predict = 80
 
-# Prior knowledge: dynamics is rotation-like (A ≈ I, tight cov), control
-# matrix B can be anything (wide prior).
-infer_kwargs = dict(
-    vae=vae, action_dim=1,
-    actions=jax_actions, n_predict=n_predict,
-    n_iterations=100,
-    prior_b_cov=10.0, init_b_cov=100.0,
-    **near_identity_prior(latent_dim, cov=0.1),
-)
+def _vae_msg(image):
+    mu, log_std = vae.encode(image)
+    lam = jnp.diag(1.0 / jnp.exp(2.0 * log_std))
+    return Gaussian(eta=lam @ mu, lam=lam)
 
-result = infer(
-    observations=sequence,
-    predict_actions=[jnp.zeros(1)] * n_predict,
-    **infer_kwargs,
+priors = near_identity_prior(latent_dim, cov=0.1)
+block = Block(
+    "z",
+    LearnedLinear(
+        dim=latent_dim, du=1, n_iterations=100,
+        prior_a_mean=priors["prior_a_mean"], prior_a_cov=priors["prior_a_cov"],
+        init_a_cov=priors["init_a_cov"],
+        prior_b_cov=10.0, init_b_cov=100.0,
+    ),
+    observe=Frozen(_vae_msg, vae.decode),
 )
+model = JointModel([block])
+model.learn([{"z": sequence, "control": jax_actions}])
 
-H = result.transition_matrix
-B = result.control_matrix
+H = block.transition.A
+B = block.transition.B
 det_A = float(jnp.linalg.det(H))
 eigs = np.linalg.eigvals(np.array(H))
 
@@ -109,14 +112,12 @@ action_regimes = {
 predictions = {}
 latent_trajs = {}
 for name, pred_actions in action_regimes.items():
-    res = infer(
-        observations=sequence,
-        predict_actions=pred_actions,
-        verbose=False,
-        **infer_kwargs,
-    )
-    predictions[name] = res.predictions
-    latent_trajs[name] = np.array(res.latent_means)
+    out = model.smooth(
+        {"z": sequence}, n_predict=n_predict,
+        controls=jax_actions, predict_controls=pred_actions,
+    )["z"]
+    predictions[name] = out["predictions"]
+    latent_trajs[name] = np.array(out["means"])
 
 # ── 5. Visualise ────────────────────────────────────────────────────────────
 try:

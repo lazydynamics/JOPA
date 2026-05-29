@@ -20,7 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 viz = ["matplotlib>=3.8"]
-notebook = ["marimo>=0.14", "matplotlib>=3.8"]
+test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 include = ["jopa*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,12 +1,19 @@
 # 🍑 JOPA
 
-**Joint Observation-Planning Architecture** — the same factor graph for learning and planning.
-
-Or: Poor Man's Active Inference via message passing.
+**Joint Observation–Planning Architecture** — one factor graph that learns latent
+dynamics, infers latent state, predicts the future, and plans actions. Every task
+is Bayesian inference; every step is a message.
 
 <p align="center">
-  <img src="docs/demo.gif" width="80%" />
+  <img src="docs/hero.gif" width="92%" />
 </p>
+
+<p align="center"><em>
+  One factor graph, four message-passing queries. <b>Top:</b> the forward/backward
+  passes, observation messages, and parameter/control messages — learning,
+  smoothing, prediction and planning, all as message passing. <b>Bottom (real
+  inference):</b> rotating-digit future prediction, and image-goal pendulum control.
+</em></p>
 
 <p align="center">
   <a href="https://arxiv.org/abs/2603.20927">Active Inference (de Vries, 2026)</a> &nbsp;·&nbsp;
@@ -16,95 +23,132 @@ Or: Poor Man's Active Inference via message passing.
 
 ---
 
-JOPA is a feasibility study for doing perception, learning, and control on a single probabilistic factor graph. It takes raw pixel images and torque inputs, learns a latent dynamical system via Bayesian message passing, and plans actions by running inference on the same graph. No reward functions, no policy networks, no replay buffers.
-
-This is a fun weekend project, not a paper. It shows the idea works on a toy pendulum and rotating digits. There are plenty of rough edges — see [Known limitations](#known-limitations) and the [open issues](https://github.com/lazydynamics/JOPA/issues) for what's missing.
-
-> **How this was built.** This codebase was largely written by [Claude Code](https://claude.ai/code). The only component Claude couldn't derive was the message-passing rules for the Continuous Transition node — those were provided as hand-derived VMP update equations. Everything else was assembled from a description of the generative model.
->
-> **Note on tests.** The inference diagnostic test suite has been removed from this release as it relies on internal tooling that cannot be open-sourced yet.
-
 ## The model
 
-![Factor Graph](docs/model.png)
+<p align="center">
+  <img src="docs/model.png" width="70%" />
+</p>
 
-A linear dynamical system in a VAE's latent space:
+A `JointModel` is a factor graph; each `Block` adds a latent-state slice with a
+**transition** factor and an **observation** factor — a linear-Gaussian latent
+system with a learned likelihood, parameters **shared across all transitions**:
 
-$$x_t \mid x_{t-1}, u_{t-1} \sim \mathcal{N}(A\, x_{t-1} + B\, u_{t-1},\; W^{-1})$$
-$$y_t \mid x_t \sim p_\theta(y_t \mid x_t) \quad \text{(VAE decoder)}$$
+$$
+\begin{aligned}
+x_t \mid x_{t-1}, u_{t-1} \;&\sim\; \mathcal{N}\!\big(A\,x_{t-1} + B\,u_{t-1},\ W^{-1}\big) && \text{(transition)} \\
+y_t \mid x_t \;&\sim\; p_\theta(y_t \mid x_t) && \text{(likelihood)} \\
+\mathbf{a} = \operatorname{vec}(A),\ \ \mathbf{b} = \operatorname{vec}(B) \;&\sim\; \mathcal{N}(\cdot), \quad W \sim \mathcal{W}(\cdot) && \text{(shared priors)}
+\end{aligned}
+$$
 
-with priors on $\mathbf{a} = \text{vec}(A)$, $W$, and $\mathbf{b} = \text{vec}(B)$. Three tasks run on the same graph — only which variables are latent changes:
+Inference is **variational message passing** under a structured posterior
+$q(x)\,q(\mathbf{a})\,q(\mathbf{b})\,q(W)$. The image likelihood is amortized — an
+encoder (a learned VAE, or a fixed map) emits the Gaussian message
 
-| Task | Inferred | Fixed |
-|------|----------|-------|
-| System identification | $A, B, W$ | VAE, images, actions |
-| Variational EM | $A, B, W$ + VAE (gradient M-step) | images, actions |
-| Planning | actions $u_t$ | $A, B, W$, start + goal images |
+$$
+q_\phi(x_t \mid y_t) = \mathcal{N}\!\big(x_t;\ \mu_\phi(y_t),\ \Sigma_\phi(y_t)\big)
+$$
 
-## What it does
+in place of $p_\theta(y_t \mid x_t)$, and a learnable decoder is refined in the M-step.
+Controls $u_t$ and observations $y_t$ are observed (dashed in the figure); the **same
+graph** answers four queries — only which variables are latent changes:
 
-**Learn dynamics** — forward-backward messages estimate latent states, VMP messages update beliefs about $A$, $B$, $W$. Variational EM refines the VAE encoder alongside the dynamics.
+| Query | Inferred | Given |
+|---|---|---|
+| **System identification** | `A, B, W` (dynamics) | observations, controls |
+| **Variational EM** | `A, B, W` + observation (VAE) weights | data |
+| **Filtering · smoothing · prediction** | latent state `x_t` | model, observations |
+| **Planning** | action sequence `u_t` | model, start + goal |
 
-**Plan actions** — fix the learned model, observe start and goal images, treat actions as latent variables. The same VMP machinery infers an action sequence. A receding-horizon loop (observe → plan → act → repeat) gives closed-loop control from pixels.
+When the future isn't observed, the forward–backward pass that smooths the past
+*predicts* it — inference and prediction are the same operation on different parts
+of the chain.
 
-![Pendulum swing-up](docs/pendulum_result.png)
+## The agent loop
 
-![Digit rotation](docs/digits_result.png)
+```python
+model = JointModel([
+    Block("z", LearnedLinear(dim=4, du=1), observe=encoder),
+])
 
-## Why "Poor Man's Active Inference"?
+while True:
+    obs     = sense()
+    if learning_on:
+        model.learn([trajectory_so_far])     # E-step (VMP) + optional M-step
+    actions = model.plan(obs_horizon)        # VMP on the action sequence
+    act(actions[0])
+```
 
-It shares the spirit — perception and action as inference on a generative model — but cuts corners: gradient-based VAE training instead of full Bayesian treatment, no epistemic priors or expected free energy, linear dynamics only. The planning is goal-conditioned VMP, not proper Active Inference. But the factor graph is real, and every operation on it is a message.
+## Building blocks
 
-## Known limitations
+| | |
+|---|---|
+| `Gaussian`, `Wishart` | Natural-parameter distributions — every message lives here |
+| `Block(name, transition, observe)` | One latent-state slice |
+| `LearnedLinear` | `x' ~ N(A·x + B·u, W⁻¹)`, conjugate VMP for `q(A,B,W)` |
+| `LearnedAffine` | `y = A·x + B·u + ε`, fully-observed regression via the same VMP |
+| `KnownPhysics` | Re-linearized gray-box dynamics |
+| `Frozen(encode, decode)` | Fixed encoder + optional renderer |
+| `LearnedVAE` | VAE encoder emits messages; weights refined in the M-step |
+| `LinearCoupling` | Cross-block Gaussian factor — multimodal fusion |
+| `JointModel.{learn, smooth, filter, plan}` | The four queries, as methods |
 
-- **VAE pre-training is not message passing.** The observation model uses gradient descent. The EM refines it, but the initial representation comes from deep learning.
-- **No velocity from a single image.** Can swing to a target but can't stabilise — a single frame doesn't encode angular velocity.
-- **Linear dynamics.** Works when the VAE learns a good representation, breaks when it doesn't. Planning fails for some goal angles due to latent space topology.
-- **Training variance.** Results depend on VAE initialisation. No automated validation that a checkpoint is good enough for planning.
+## A minimal example
 
-## Contributing
+System identification + planning on a controlled 2-D linear system (the latent
+is seen only through `encode`):
 
-Contributions are welcome. The best place to start is the open issues — each one describes a concrete direction that would make this more than a toy:
+```python
+import numpy as np
+from jopa import JointModel, Block, LearnedLinear, Gaussian
 
-- [**Nonlinear transition node**](https://github.com/lazydynamics/JOPA/issues/1) — replace linear dynamics with a learned function, keeping the message passing structure
-- [**Multi-frame encoder**](https://github.com/lazydynamics/JOPA/issues/2) — encode velocity from frame stacks to fix the stabilisation problem
-- [**Expected free energy**](https://github.com/lazydynamics/JOPA/issues/3) — add epistemic priors for proper Active Inference
-- [**Standard benchmarks**](https://github.com/lazydynamics/JOPA/issues/4) — CartPole, Acrobot, Reacher — show where the Bayesian approach helps
+def encode(x):                          # x → Gaussian message
+    lam = 1e4 * np.eye(2)
+    return Gaussian(eta=lam @ x, lam=lam)
 
-Pick one, open a PR, and we'll review it.
+block = Block("z", LearnedLinear(dim=2, du=1, n_iterations=40), observe=encode)
+model = JointModel([block])
 
-## Try it
+model.learn(trajectories)               # [{"z": [x_0, x_1, …], "control": [u_0, …]}, …]
+actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
+```
+
+## Examples
+
+| Script | Demonstrates | |
+|---|---|---|
+| [`rotating_digits.py`](examples/rotating_digits.py) | Latent linear dynamics with a frozen VAE — rotation in `z` | <img src="docs/digits_result.png" width="110"/> |
+| [`controlled_digits.py`](examples/controlled_digits.py) | Add a control input; learn `B`, predict under action regimes | |
+| [`end_to_end_digits.py`](examples/end_to_end_digits.py) | Variational EM — refine the VAE encoder alongside the dynamics | |
+| [`pendulum.py`](examples/pendulum.py) | Image-only VAE + Variational EM + image-goal control — set a target frame, reach it by control | |
+
+## Install & run
 
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
-uv pip install -e .                       # core + examples
-uv run python examples/pendulum.py        # swing-up demo
-uv pip install -e ".[notebook]"           # adds marimo + matplotlib
-uv run marimo run notebook.py             # interactive notebook
+uv pip install -e ".[viz]"
+uv run python examples/pendulum.py
+uv run pytest                                 # 18 semantic tests
 ```
 
-## Structure
+## Design notes
 
-```
-jopa/
-  distributions.py     # Gaussian, Wishart in natural parameter form
-  message_passing.py   # Forward-backward messages, VMP accumulation
-  inference.py         # infer() — learn dynamics, plan() — infer actions
-  em.py                # variational_em() — joint VAE + dynamics learning
-  nodes/
-    transition.py      # Continuous transition node (VMP message rules)
-    observation.py     # VAE observation node
-  nn/
-    vae.py             # Convolutional VAE (Flax)
-  data.py              # MNIST loading and rotation utilities
-  envs/                # Simulation environments (pendulum)
-```
+* **Bayesian inference is the only verb.** Learning, state inference, prediction and
+  planning are each `q(·)` on a different subset of the same graph — no reward
+  shaping, policy networks, or replay buffers.
+* **Linear-Gaussian latent dynamics**, either assumed (`LearnedLinear` in latent
+  space) or from a per-step local linearization (`KnownPhysics`). The VAE
+  pre-training — autoencoding the observations — is the one non-message-passing
+  bootstrap; the M-step then refines the encoder under the inferred dynamics.
+* **Composability.** Adding a modality is appending a `Block`; information flows
+  across slices through `LinearCoupling`. The `JointModel` knows only blocks and
+  messages — not images, proprioception, or actions.
 
 ## References
 
-- de Vries, B. "Active Inference for Physical AI Agents — An Engineering Perspective", arXiv:2603.20927, 2026.
-- Şenöz, I. et al. "Variational Message Passing and Local Constraint Manipulation in Factor Graphs", Entropy, 2021.
+* de Vries, B. *Active Inference for Physical AI Agents — An Engineering Perspective*, arXiv:2603.20927, 2026.
+* Şenöz, I. et al. *Variational Message Passing and Local Constraint Manipulation in Factor Graphs*, Entropy 23(7), 2021.
 
 ## License
 
-GPL-3.0 — free to use, derivatives must also be open source.
+GPL-3.0.

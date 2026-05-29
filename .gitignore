@@ -15,5 +15,6 @@ outputs/*.mp4
 outputs/*.html
 checkpoints/*.npz
 checkpoints/*.pkl
+scripts/
 .DS_Store
 docs/index.html
