@@ -41,6 +41,14 @@ _p.add_argument("--n-frames", type=int, default=4,
                 help="Window size K for the multi-frame VAE encoder.")
 _p.add_argument("--no-cache", action="store_true")
 args = _p.parse_args()
+if args.n_frames < 1:
+    _p.error("--n-frames must be >= 1")
+if args.horizon < 2:
+    _p.error("--horizon must be >= 2 (it shrinks to 2 near the goal)")
+if args.exec_steps < 1:
+    _p.error("--exec-steps must be >= 1")
+if args.n_replans < 1:
+    _p.error("--n-replans must be >= 1")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -82,6 +90,8 @@ print(f"  {n_trajectories} trajectories × {traj_len} steps")
 def windows_of(frames, K):
     """Sliding K-frame windows of a frame sequence."""
     arr = np.stack([np.asarray(f) for f in frames])
+    if len(arr) < K:
+        raise ValueError(f"need at least K={K} frames to form a window, got {len(arr)}")
     return np.stack([arr[i:i + K] for i in range(len(arr) - K + 1)])
 
 
@@ -129,16 +139,20 @@ fingerprint = {
 
 cached = None
 if not args.no_cache:
+    # Local, self-written pickle cache of JAX pytrees. Any load failure
+    # (missing / corrupt / stale format) is treated as a cache miss → recompute.
     try:
         with open(em_cache, "rb") as f:
             blob = pickle.load(f)
-        if blob.get("fingerprint") == fingerprint:
+        if isinstance(blob, dict) and blob.get("fingerprint") == fingerprint:
             cached = blob
             print(f"Loaded EM result from {em_cache}")
         else:
             print(f"Cache fingerprint mismatch at {em_cache}; recomputing")
     except FileNotFoundError:
         pass
+    except Exception as e:
+        print(f"Ignoring unreadable EM cache at {em_cache} ({type(e).__name__}); recomputing")
 
 learned_vae = LearnedVAE(
     vae_model, params, lr=em_hparams["lr"],

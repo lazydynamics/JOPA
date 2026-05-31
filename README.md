@@ -5,7 +5,7 @@ dynamics, infers latent state, predicts the future, and plans actions. Every tas
 is Bayesian inference; every step is a message.
 
 <p align="center">
-  <img src="docs/hero.gif" width="92%" />
+  <img src="docs/hero.gif" width="92%" alt="JOPA factor graph with message passing on top; rotating-digit prediction and image-goal pendulum control below" />
 </p>
 
 <p align="center"><em>
@@ -26,7 +26,7 @@ is Bayesian inference; every step is a message.
 ## The model
 
 <p align="center">
-  <img src="docs/model.png" width="70%" />
+  <img src="docs/model.png" width="70%" alt="The JOPA generative model: linear-Gaussian latent transitions with a learned observation likelihood" />
 </p>
 
 A `JointModel` is a factor graph; each `Block` adds a latent-state slice with a
@@ -117,7 +117,7 @@ actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
 
 | Script | Demonstrates | |
 |---|---|---|
-| [`rotating_digits.py`](examples/rotating_digits.py) | Latent linear dynamics with a frozen VAE — rotation in `z` | <img src="docs/digits_result.png" width="110"/> |
+| [`rotating_digits.py`](examples/rotating_digits.py) | Latent linear dynamics with a frozen VAE — rotation in `z` | <img src="docs/digits_result.png" width="110" alt="Rotating-digit reconstructions"/> |
 | [`controlled_digits.py`](examples/controlled_digits.py) | Add a control input; learn `B`, predict under action regimes | |
 | [`end_to_end_digits.py`](examples/end_to_end_digits.py) | Variational EM — refine the VAE encoder alongside the dynamics | |
 | [`pendulum.py`](examples/pendulum.py) | Image-only VAE + Variational EM + image-goal control — set a target frame, reach it by control | |
@@ -126,7 +126,7 @@ actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
 
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
-uv pip install -e ".[viz]"
+uv pip install -e ".[viz,test]"
 uv run python examples/pendulum.py
 uv run pytest                                 # 18 semantic tests
 ```

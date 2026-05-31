@@ -72,6 +72,10 @@ def forward_backward(prior_x, obs_msgs, cache, actions=None):
     """
     obs = _as_stack(obs_msgs)
     T = obs.eta.shape[0]
+    if actions is not None and cache.mB is None:
+        raise ValueError(
+            "forward_backward: `actions` were provided but the model has no control matrix "
+            "(cache.mB is None) — supply a model with B, or drop `actions`.")
     has_control = actions is not None and cache.mB is not None
     if has_control:
         actions = jnp.stack(actions) if isinstance(actions, list) else actions
@@ -113,6 +117,10 @@ def accumulate_vmp_messages(m_xs, m_ys, cache, actions, prior_a, prior_W, prior_
     n = m_xs.eta.shape[0]
     has_control = prior_b is not None and cache.mB is not None
     if has_control:
+        if actions is None:
+            raise ValueError(
+                "accumulate_vmp_messages: control is enabled (prior_b and cache.mB set) "
+                "but `actions` is None — provide the per-transition controls.")
         actions = jnp.stack(actions) if isinstance(actions, list) else actions
     else:
         actions = jnp.zeros((n, 1))

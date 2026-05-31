@@ -149,12 +149,17 @@ def train_vae(
     β-annealing from 0.1 → 1.0 over the first 15 epochs.
     """
     images = jnp.asarray(images)
-    if n_frames == 1 and images.ndim == 4 and images.shape[1] == 1:
-        images = images[:, 0]
-    if n_frames > 1:
-        assert images.ndim == 4 and images.shape[1] == n_frames, \
-            f"multi-frame training expects (N, {n_frames}, 28, 28), got {images.shape}"
-    targets_arr = images              # autoencode: the decoder reconstructs its input
+    if images.ndim == 4:
+        if images.shape[1] != n_frames:
+            raise ValueError(
+                f"4D input has {images.shape[1]} frames per window but n_frames={n_frames}; "
+                f"expected (N, {n_frames}, 28, 28)")
+        if n_frames == 1:
+            images = images[:, 0]            # (N, 1, 28, 28) → (N, 28, 28)
+    elif n_frames > 1:
+        raise ValueError(
+            f"n_frames={n_frames} expects a 4D (N, {n_frames}, 28, 28) input, got {images.shape}")
+    targets_arr = images                     # autoencode: the decoder reconstructs its input
 
     model = VAE(latent_dim=latent_dim, ch=ch, n_frames=n_frames)
     rng = jax.random.PRNGKey(seed)

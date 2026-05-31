@@ -17,6 +17,17 @@ from jopa.blocks import (
 from jopa.nn.vae import VAE
 
 
+# ---- package surface -------------------------------------------------------
+
+def test_package_exports_are_importable():
+    """The documented `from jopa import …` surface (README) resolves and is sane."""
+    import jopa
+    for name in jopa.__all__:
+        assert hasattr(jopa, name), f"jopa.{name} is in __all__ but not importable"
+    from jopa import Gaussian, Block, LearnedLinear, LearnedVAE
+    assert all(callable(x) for x in (Gaussian, Block, LearnedLinear, LearnedVAE))
+
+
 # ---- helpers ---------------------------------------------------------------
 
 def _msg(mean, prec):
@@ -136,7 +147,7 @@ def test_per_trajectory_mode_fits_last_trajectory():
 
 
 def test_learned_linear_rejects_unknown_mode():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"mode must be"):
         LearnedLinear(dim=2, mode="bogus")
 
 
