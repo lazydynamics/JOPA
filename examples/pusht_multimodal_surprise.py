@@ -251,6 +251,119 @@ def fit_coupling(train_eps, ridge: float = 1e-3):
     return LinearCoupling.fit("p", "z", p, z, ridge=ridge)
 
 
+def _phase_rows(episodes):
+    rows = []
+    for ep in episodes:
+        denom = max(len(ep.z) - 1, 1)
+        for t, (p, z) in enumerate(zip(ep.p, ep.z)):
+            rows.append(
+                {
+                    "phase": t / denom,
+                    "p": p,
+                    "z": z,
+                    "episode": ep.index,
+                    "reward": float(np.max(ep.reward)),
+                    "success": ep.success,
+                }
+            )
+    return rows
+
+
+def _predict_coupling(coupling, p):
+    return np.asarray(p) @ np.asarray(coupling.M).T + np.asarray(coupling.offset)
+
+
+def _array_r2(y, pred):
+    y = np.asarray(y, dtype=np.float64)
+    pred = np.asarray(pred, dtype=np.float64)
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean(axis=0, keepdims=True)) ** 2))
+    return float("nan") if ss_tot <= 1e-12 else 1.0 - ss_res / ss_tot
+
+
+def _mean_or_nan(xs):
+    return float(np.mean(xs)) if xs else float("nan")
+
+
+def evaluate_coupling_regressions(train_eps, test_eps, bins_list: list[int], ridge: float = 1e-3):
+    train_rows = _phase_rows(train_eps)
+    test_rows = _phase_rows(test_eps)
+    train_p = np.stack([r["p"] for r in train_rows])
+    train_z = np.stack([r["z"] for r in train_rows])
+    test_p = np.stack([r["p"] for r in test_rows])
+    test_z = np.stack([r["z"] for r in test_rows])
+
+    def score_model(name, bins, predict_one):
+        train_pred = np.stack([predict_one(r["phase"], r["p"]) for r in train_rows])
+        test_pred = np.stack([predict_one(r["phase"], r["p"]) for r in test_rows])
+        ep_errors = {}
+        ep_rewards = {}
+        ep_success = {}
+        for r, pred in zip(test_rows, test_pred):
+            ep_errors.setdefault(r["episode"], []).append(float(np.mean((r["z"] - pred) ** 2)))
+            ep_rewards[r["episode"]] = r["reward"]
+            ep_success[r["episode"]] = r["success"]
+        episode_mse = {ep: float(np.mean(vals)) for ep, vals in ep_errors.items()}
+        rewards = [ep_rewards[ep] for ep in episode_mse]
+        errors = [episode_mse[ep] for ep in episode_mse]
+        success_errors = [episode_mse[ep] for ep, ok in ep_success.items() if ok]
+        fail_errors = [episode_mse[ep] for ep, ok in ep_success.items() if not ok]
+        return {
+            "model": name,
+            "bins": bins,
+            "train_mse": float(np.mean((train_z - train_pred) ** 2)),
+            "test_mse": float(np.mean((test_z - test_pred) ** 2)),
+            "test_r2": _array_r2(test_z, test_pred),
+            "corr_episode_mse_reward": _corr(errors, rewards),
+            "success_episode_mse": _mean_or_nan(success_errors),
+            "fail_episode_mse": _mean_or_nan(fail_errors),
+        }
+
+    global_coupling, global_diag = LinearCoupling.fit("p", "z", train_p, train_z, ridge=ridge)
+    rows = [
+        score_model(
+            "global_affine",
+            1,
+            lambda _phase, p: _predict_coupling(global_coupling, p),
+        )
+    ]
+    rows[0].update(
+        {
+            "noise_var": global_diag["noise_var"],
+            "offset_norm": global_diag["offset_norm"],
+            "residual_rmse": global_diag["residual_rmse"],
+        }
+    )
+
+    for bins in bins_list:
+        couplings = []
+        diagnostics = []
+        for k in range(bins):
+            lo, hi = k / bins, (k + 1) / bins
+            part = [r for r in train_rows if r["phase"] >= lo and (r["phase"] < hi or k == bins - 1)]
+            p = np.stack([r["p"] for r in part])
+            z = np.stack([r["z"] for r in part])
+            coupling, diag = LinearCoupling.fit("p", "z", p, z, ridge=ridge)
+            couplings.append(coupling)
+            diagnostics.append(diag)
+
+        def predict_phase(phase, p):
+            idx = min(int(phase * bins), bins - 1)
+            return _predict_coupling(couplings[idx], p)
+
+        row = score_model(f"phase_affine_{bins}", bins, predict_phase)
+        row.update(
+            {
+                "noise_var": float(np.mean([d["noise_var"] for d in diagnostics])),
+                "offset_norm": float(np.mean([d["offset_norm"] for d in diagnostics])),
+                "residual_rmse": float(np.mean([d["residual_rmse"] for d in diagnostics])),
+            }
+        )
+        rows.append(row)
+    best = max(rows, key=lambda r: r["test_r2"])
+    return rows, best
+
+
 def learn_two_block_model(train_eps, p_dim: int, z_dim: int, action_dim: int, precision: float, vmp_iters: int, console: Console):
     _, p_block = learn_block_model("p", train_eps, lambda ep: ep.p, p_dim, action_dim, precision, vmp_iters, console)
     _, z_block = learn_block_model("z", train_eps, lambda ep: ep.z, z_dim, action_dim, precision, vmp_iters, console)
@@ -381,7 +494,7 @@ def _corr(xs, ys):
     return float(np.corrcoef(xs, ys)[0, 1])
 
 
-def render_plots(out_dir: Path, rows, pca_curve, latent_dim: int, console: Console):
+def render_plots(out_dir: Path, rows, pca_curve, latent_dim: int, console: Console, coupling_rows=None):
     import matplotlib.pyplot as plt
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -448,6 +561,24 @@ def render_plots(out_dir: Path, rows, pca_curve, latent_dim: int, console: Conso
     fig.tight_layout()
     fig.savefig(out_dir / "pca_explained_variance.png", dpi=160)
     plt.close(fig)
+
+    if coupling_rows:
+        fig, ax1 = plt.subplots(figsize=(7, 4))
+        xs = [r["bins"] for r in coupling_rows]
+        r2s = [r["test_r2"] for r in coupling_rows]
+        mses = [r["test_mse"] for r in coupling_rows]
+        ax1.plot(xs, r2s, marker="o", color="tab:blue", label="test R2")
+        ax1.set_xlabel("phase coupling bins")
+        ax1.set_ylabel("proprio -> world latent R2", color="tab:blue")
+        ax1.tick_params(axis="y", labelcolor="tab:blue")
+        ax2 = ax1.twinx()
+        ax2.plot(xs, mses, marker="s", color="tab:red", label="test MSE")
+        ax2.set_ylabel("test MSE", color="tab:red")
+        ax2.tick_params(axis="y", labelcolor="tab:red")
+        ax1.set_title("Global vs phase-conditioned coupling")
+        fig.tight_layout()
+        fig.savefig(out_dir / "phase_coupling_bins.png", dpi=160)
+        plt.close(fig)
     console.log(f"wrote plots to {out_dir}")
 
 
@@ -478,6 +609,23 @@ def print_comparison(console: Console, summary):
             f"{row['mean_coupling_kl']:.3f}",
             f"{row['mean_alert_rate']:.1%}",
             f"{row['corr_surprise_reward']:.3f}",
+        )
+    console.print(table)
+
+
+def print_coupling_table(console: Console, rows, top_k: int = 8):
+    table = Table(title="Coupling regression: proprio -> world latent")
+    for col in ["model", "bins", "test R2", "test MSE", "corr err/reward", "success MSE", "fail MSE"]:
+        table.add_column(col)
+    for row in sorted(rows, key=lambda r: r["test_r2"], reverse=True)[:top_k]:
+        table.add_row(
+            row["model"],
+            str(row["bins"]),
+            f"{row['test_r2']:.3f}",
+            f"{row['test_mse']:.3f}",
+            f"{row['corr_episode_mse_reward']:.3f}",
+            f"{row['success_episode_mse']:.3f}",
+            f"{row['fail_episode_mse']:.3f}",
         )
     console.print(table)
 
@@ -518,6 +666,7 @@ def main():
     parser.add_argument("--latent-dim", type=int, default=8)
     parser.add_argument("--precision", type=float, default=100.0)
     parser.add_argument("--vmp-iters", type=int, default=20)
+    parser.add_argument("--phase-coupling-bins", default="2,3,4,5,8,10,12,16,20,30")
     parser.add_argument("--success-reward-threshold", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/pusht_surprise"))
@@ -606,11 +755,17 @@ def main():
         "one_block_visual_world": summarize_rows(test_rows, "one_block_visual_world"),
         "two_block_proprio_visual": summarize_rows(test_rows, "two_block_proprio_visual"),
     }
+    phase_bins = [int(x) for x in args.phase_coupling_bins.split(",") if x.strip()]
+    coupling_rows, best_coupling = evaluate_coupling_regressions(train_eps, test_eps, phase_bins)
 
     summary = {
         "hypothesis": (
             "A coupled proprio + visual-world JOPA should improve holdout world-state prediction, "
             "belief consistency, or reward/surprise separation compared with a visual-world block alone."
+        ),
+        "phase_coupling_hypothesis": (
+            "If global coupling is too blunt, phase-conditioned affine couplings should explain "
+            "more held-out world latent variance from proprio than one global affine coupling."
         ),
         "repo_id": args.repo_id,
         "feature": args.feature,
@@ -631,6 +786,8 @@ def main():
         "success_reward_threshold": args.success_reward_threshold,
         "test_successes": int(sum(1 for r in one_test_rows if r["success"])),
         "comparison": comparison,
+        "coupling_regression": coupling_rows,
+        "best_coupling_regression": best_coupling,
     }
 
     console.print(
@@ -644,12 +801,14 @@ def main():
                     f"one-block mean surprise/R2: {comparison['one_block_visual_world']['mean_surprise']:.3f}/{comparison['one_block_visual_world']['mean_r2']:.3f}",
                     f"two-block mean surprise/R2: {comparison['two_block_proprio_visual']['mean_surprise']:.3f}/{comparison['two_block_proprio_visual']['mean_r2']:.3f}",
                     f"two-block coupling KL: {comparison['two_block_proprio_visual']['mean_coupling_kl']:.3f}",
+                    f"best phase coupling R2: {best_coupling['test_r2']:.3f} ({best_coupling['model']})",
                 ]
             ),
             title="run summary",
         )
     )
     print_comparison(console, comparison)
+    print_coupling_table(console, coupling_rows)
     print_table(console, "Top surprise holdout episodes", test_rows, "surprise_score", args.top_k)
     print_table(console, "Largest terminal belief misses", test_rows, "terminal_dist", args.top_k)
 
@@ -660,8 +819,9 @@ def main():
     _write_csv(args.output_dir / "one_block_test_metrics.csv", one_test_rows)
     _write_csv(args.output_dir / "two_block_train_metrics.csv", two_train_rows)
     _write_csv(args.output_dir / "two_block_test_metrics.csv", two_test_rows)
+    _write_csv(args.output_dir / "coupling_regression_metrics.csv", coupling_rows)
     _write_json(args.output_dir / "summary.json", summary)
-    render_plots(args.output_dir, test_rows, pca_curve, args.latent_dim, console)
+    render_plots(args.output_dir, test_rows, pca_curve, args.latent_dim, console, coupling_rows)
     console.print(f"[green]wrote metrics to {args.output_dir}[/green]")
 
 

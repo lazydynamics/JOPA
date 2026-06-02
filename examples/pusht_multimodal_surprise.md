@@ -40,11 +40,25 @@ two-block mean surprise/R2: 14.523 / 0.428
 two-block coupling KL:      0.041
 ```
 
-So the current conclusion is narrow: affine coupling is now represented
-correctly, but this PushT keypoint setup does not yet justify claiming that the
-two-block model is better. The next useful experiment is a task/phase/event
-conditioned coupling where cross-modal constraints are active only when the
-robot should actually affect the world.
+So the first conclusion is narrow: affine coupling is now represented correctly,
+but this PushT keypoint setup does not yet justify claiming that the coupled
+two-block filter is better.
+
+The next test asks whether the relation between proprio and world state is
+phase dependent. It fits `z_t ~= M_k p_t + b_k + noise` in episode phase bins,
+then scores held-out proprio-to-world latent regression:
+
+```text
+global affine coupling R2: 0.130
+best phase affine R2:      0.210  (16 bins)
+```
+
+That is the clearest current signal: phase-conditioned coupling explains more
+world latent variance than one global coupling. It still does not provide a
+strong failure detector on this PushT split (`corr(error, reward) ~= -0.09`),
+so the research direction is now more precise: JOPA likely needs a
+phase/event-conditioned coupling workflow before cross-modal disagreement
+becomes useful for robotics diagnostics.
 
 ## Setup
 
@@ -98,10 +112,12 @@ outputs/pusht_surprise/
   one_block_test_metrics.csv
   two_block_train_metrics.csv
   two_block_test_metrics.csv
+  coupling_regression_metrics.csv
   surprise_vs_reward.png
   top_surprise_episodes.png
   episode_diagnostics.png
   pca_explained_variance.png
+  phase_coupling_bins.png
 ```
 
 Dataset files stay ignored. The current branch intentionally includes the small
@@ -119,6 +135,7 @@ Per episode, the script reports:
 - alert rate against the train p95 KL threshold;
 - terminal belief distance;
 - two-block coupling KL;
+- global vs phase-conditioned proprio-to-world coupling regression;
 - correlation between surprise/terminal distance and PushT reward.
 
 The point is not to beat a policy benchmark yet. The point is to test whether
