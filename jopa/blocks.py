@@ -353,15 +353,55 @@ class LearnedAffine:
 # ---------------------------------------------------------------------------
 
 class LinearCoupling:
-    """Gaussian factor  z = M·s + ε,  ε ~ N(0, P⁻¹)  linking two block slices.
-    `fuse(b_from, b_to)` returns the marginalised beliefs after applying the
-    factor — information flows both ways."""
+    """Gaussian factor  z = M·s + b + ε,  ε ~ N(0, P⁻¹), linking two block
+    slices. `fuse(b_from, b_to)` returns the marginalised beliefs after
+    applying the factor — information flows both ways.
 
-    def __init__(self, from_name: str, to_name: str, M, noise_prec):
+    `offset` defaults to zero, preserving the original linear `z = M·s + ε`
+    behavior. Use `LinearCoupling.fit(...)` to estimate a reusable affine
+    coupling from paired samples.
+    """
+
+    def __init__(self, from_name: str, to_name: str, M, noise_prec, offset=None):
         self.from_name = from_name
         self.to_name = to_name
         self.M = jnp.asarray(M)
         self.noise_prec = float(noise_prec)
+        d_z = self.M.shape[0]
+        self.offset = jnp.zeros(d_z) if offset is None else jnp.asarray(offset).reshape(d_z)
+
+    @classmethod
+    def fit(cls, from_name: str, to_name: str, x_from, x_to, ridge: float = 1e-3, affine: bool = True):
+        """Fit `x_to ~= M @ x_from + offset` by ridge regression.
+
+        Returns `(coupling, diagnostics)` where diagnostics includes residual
+        variance and offset norm. `x_from` and `x_to` are arrays with shape
+        `(n_samples, dim)`.
+        """
+        x_from = jnp.asarray(x_from)
+        x_to = jnp.asarray(x_to)
+        n = min(x_from.shape[0], x_to.shape[0])
+        x_from, x_to = x_from[:n], x_to[:n]
+        if affine:
+            design = jnp.concatenate([x_from, jnp.ones((n, 1), dtype=x_from.dtype)], axis=1)
+        else:
+            design = x_from
+        reg = ridge * jnp.eye(design.shape[1], dtype=design.dtype)
+        if affine:
+            reg = reg.at[-1, -1].set(0.0)
+        coef = jnp.linalg.solve(design.T @ design + reg, design.T @ x_to).T
+        M = coef[:, :-1] if affine else coef
+        offset = coef[:, -1] if affine else jnp.zeros(x_to.shape[1], dtype=x_to.dtype)
+        pred = design @ coef.T
+        residual = x_to - pred
+        noise_var = float(jnp.mean(residual ** 2) + ridge)
+        coupling = cls(from_name, to_name, M=M, offset=offset, noise_prec=1.0 / noise_var)
+        diagnostics = {
+            "noise_var": noise_var,
+            "offset_norm": float(jnp.linalg.norm(offset)),
+            "residual_rmse": float(jnp.sqrt(jnp.mean(residual ** 2))),
+        }
+        return coupling, diagnostics
 
     def fuse(self, b_from: Gaussian, b_to: Gaussian):
         d_s, d_z = b_from.eta.shape[0], b_to.eta.shape[0]
@@ -371,7 +411,10 @@ class LinearCoupling:
             [b_from.lam + MtP @ self.M, -MtP],
             [-MtP.T,                     b_to.lam + P],
         ])
-        eta = jnp.concatenate([b_from.eta, b_to.eta])
+        eta = jnp.concatenate([
+            b_from.eta - MtP @ self.offset,
+            b_to.eta + P @ self.offset,
+        ])
         cov = jnp.linalg.inv(Lam)
         mu = cov @ eta
         lam_s = jnp.linalg.inv(cov[:d_s, :d_s])
