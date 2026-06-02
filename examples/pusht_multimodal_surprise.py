@@ -248,22 +248,14 @@ def learn_block_model(name, train_eps, seq_getter, dim: int, action_dim: int, pr
 def fit_coupling(train_eps, ridge: float = 1e-3):
     p = np.concatenate([ep.p for ep in train_eps], axis=0)
     z = np.concatenate([ep.z for ep in train_eps], axis=0)
-    n = min(len(p), len(z))
-    p, z = p[:n], z[:n]
-    design = np.concatenate([p, np.ones((len(p), 1), dtype=p.dtype)], axis=1)
-    reg = ridge * np.eye(design.shape[1])
-    coef = np.linalg.solve(design.T @ design + reg, design.T @ z).T
-    pred = design @ coef.T
-    residual = z - pred
-    noise_var = float(np.mean(residual**2) + ridge)
-    return LinearCoupling("p", "z", M=coef[:, :-1], noise_prec=1.0 / noise_var), noise_var
+    return LinearCoupling.fit("p", "z", p, z, ridge=ridge)
 
 
 def learn_two_block_model(train_eps, p_dim: int, z_dim: int, action_dim: int, precision: float, vmp_iters: int, console: Console):
     _, p_block = learn_block_model("p", train_eps, lambda ep: ep.p, p_dim, action_dim, precision, vmp_iters, console)
     _, z_block = learn_block_model("z", train_eps, lambda ep: ep.z, z_dim, action_dim, precision, vmp_iters, console)
-    coupling, noise_var = fit_coupling(train_eps)
-    return JointModel([p_block, z_block], coupling=coupling), p_block, z_block, noise_var
+    coupling, coupling_diagnostics = fit_coupling(train_eps)
+    return JointModel([p_block, z_block], coupling=coupling), p_block, z_block, coupling_diagnostics
 
 
 def terminal_stats(episodes):
@@ -579,7 +571,7 @@ def main():
         alert_threshold=one_kl_threshold,
     )
 
-    two_model, _, two_z_block, coupling_noise_var = learn_two_block_model(
+    two_model, _, two_z_block, coupling_diagnostics = learn_two_block_model(
         train_eps,
         train_eps[0].p.shape[-1],
         args.latent_dim,
@@ -635,7 +627,7 @@ def main():
         "pca_components_for_99": int(np.searchsorted(pca_curve, 0.99) + 1),
         "one_block_train_kl_p95": one_kl_threshold,
         "two_block_train_kl_p95": two_kl_threshold,
-        "coupling_noise_var": coupling_noise_var,
+        "coupling": coupling_diagnostics,
         "success_reward_threshold": args.success_reward_threshold,
         "test_successes": int(sum(1 for r in one_test_rows if r["success"])),
         "comparison": comparison,

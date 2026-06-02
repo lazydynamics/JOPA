@@ -31,8 +31,12 @@
   "pca_components_for_95": 4,
   "pca_components_for_99": 4,
   "one_block_train_kl_p95": 15.754846206605917,
-  "two_block_train_kl_p95": 25.130208740051543,
-  "coupling_noise_var": 0.7879374948371519,
+  "two_block_train_kl_p95": 15.68189497168187,
+  "coupling": {
+    "noise_var": 0.7879372239112854,
+    "offset_norm": 276.3332214355469,
+    "residual_rmse": 0.8870948553085327
+  },
   "success_reward_threshold": 0.92,
   "test_successes": 5,
   "comparison": {
@@ -48,12 +52,12 @@
     },
     "two_block_proprio_visual": {
       "n": 41,
-      "mean_surprise": 171.12750721214047,
+      "mean_surprise": 14.523119466159253,
       "mean_r2": 0.42759225422211844,
-      "mean_kl": 15.93893204836108,
-      "mean_coupling_kl": 593.8206012184278,
-      "mean_alert_rate": 0.0496993730674177,
-      "corr_surprise_reward": -0.2961895179090601,
+      "mean_kl": 9.98543924750596,
+      "mean_coupling_kl": 0.04144794332655842,
+      "mean_alert_rate": 0.050141314128580264,
+      "corr_surprise_reward": -0.2856779926756902,
       "corr_terminal_reward": -0.6048461099912038
     }
   }

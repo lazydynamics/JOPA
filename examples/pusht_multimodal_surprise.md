@@ -15,7 +15,7 @@ observation.state -> q(p_t)
 observation.environment_state -> q(z_t)
 p[t+1] ~ A_p p[t] + B_p u[t]
 z[t+1] ~ A_z z[t] + B_z u[t]
-z_t ~= M p_t + noise
+z_t ~= M p_t + b + noise
 ```
 
 The default dataset is `lerobot/pusht_keypoints`. Its
@@ -23,6 +23,28 @@ The default dataset is `lerobot/pusht_keypoints`. Its
 from the PushT scene. The script projects that feature with PCA, learns
 controlled latent dynamics, then scores holdout episodes with online
 predictive-vs-corrected belief gaps and coupling inconsistency.
+
+## Current result
+
+The checked-in run supports the visual/world block as a useful robotics
+diagnostic baseline, but it does not yet show that the coupled two-block model
+improves world-state prediction.
+
+The first two-block version used a global zero-offset coupling and produced a
+large coupling KL. After moving coupling fitting into `LinearCoupling.fit(...)`
+and preserving the fitted affine offset, the artificial mismatch disappears:
+
+```text
+one-block mean surprise/R2: 14.530 / 0.428
+two-block mean surprise/R2: 14.523 / 0.428
+two-block coupling KL:      0.041
+```
+
+So the current conclusion is narrow: affine coupling is now represented
+correctly, but this PushT keypoint setup does not yet justify claiming that the
+two-block model is better. The next useful experiment is a task/phase/event
+conditioned coupling where cross-modal constraints are active only when the
+robot should actually affect the world.
 
 ## Setup
 

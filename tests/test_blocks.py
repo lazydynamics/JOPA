@@ -283,6 +283,27 @@ def test_linear_coupling_sharpens_noisy_slice_via_clean_one():
     assert yes < 0.3 * no
 
 
+def test_linear_coupling_fit_keeps_affine_offset():
+    rng = np.random.RandomState(11)
+    x = rng.randn(100, 2)
+    M = np.array([[1.5, -0.25], [0.5, 2.0]])
+    offset = np.array([0.75, -1.25])
+    z = x @ M.T + offset + 0.01 * rng.randn(100, 2)
+    coupling, diagnostics = LinearCoupling.fit("s", "z", x, z, ridge=1e-4)
+    assert np.allclose(np.array(coupling.M), M, atol=0.03)
+    assert np.allclose(np.array(coupling.offset), offset, atol=0.03)
+    assert diagnostics["residual_rmse"] < 0.03
+
+
+def test_linear_coupling_offset_affects_fusion_mean():
+    coupling = LinearCoupling("s", "z", M=jnp.eye(2), offset=jnp.array([2.0, -1.0]), noise_prec=1e3)
+    s_belief = _msg([0.0, 0.0], 1.0)
+    z_belief = _msg([3.0, -2.0], 1e2)
+    fused_s, fused_z = coupling.fuse(s_belief, z_belief)
+    assert np.allclose(np.array(gaussian_mean(fused_s)), [1.0, -1.0], atol=0.05)
+    assert np.allclose(np.array(gaussian_mean(fused_z)), [3.0, -2.0], atol=0.05)
+
+
 def test_filter_composes_blocks_and_incorporates_observations():
     rng = np.random.RandomState(2)
     A_img = np.array([[0.95, 0.1], [-0.1, 0.95]])
