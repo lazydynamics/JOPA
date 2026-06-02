@@ -10,6 +10,11 @@ from .blocks import (
     LearnedLinear, LearnedAffine, KnownPhysics,
     LinearCoupling,
 )
+from .diagnostics import (
+    BeliefGap, FilterStepDiagnostics, TransitionMetrics,
+    belief_gap, block_precision, covariance_trace, filter_with_diagnostics,
+    gaussian_kl, transition_metrics, transition_residuals,
+)
 
 __all__ = [
     "Gaussian", "Wishart",
@@ -19,4 +24,7 @@ __all__ = [
     "Observation", "Frozen", "LearnedVAE",
     "LearnedLinear", "LearnedAffine", "KnownPhysics",
     "LinearCoupling",
+    "BeliefGap", "FilterStepDiagnostics", "TransitionMetrics",
+    "belief_gap", "block_precision", "covariance_trace", "filter_with_diagnostics",
+    "gaussian_kl", "transition_metrics", "transition_residuals",
 ]

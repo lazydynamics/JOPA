@@ -121,6 +121,7 @@ actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
 | [`controlled_digits.py`](examples/controlled_digits.py) | Add a control input; learn `B`, predict under action regimes | |
 | [`end_to_end_digits.py`](examples/end_to_end_digits.py) | Variational EM — refine the VAE encoder alongside the dynamics | |
 | [`pendulum.py`](examples/pendulum.py) | Image-only VAE + Variational EM + image-goal control — set a target frame, reach it by control | |
+| [`pusht_multimodal_surprise.py`](examples/pusht_multimodal_surprise.py) | PushT visual-world latent block; score holdout episodes by predictive-vs-corrected belief surprise | |
 
 ## Install & run
 

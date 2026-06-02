@@ -21,6 +21,11 @@ dependencies = [
 [project.optional-dependencies]
 viz = ["matplotlib>=3.8"]
 test = ["pytest>=8"]
+benchmarks = [
+    "matplotlib>=3.8",
+    "pyarrow>=16",
+    "rich>=13.7",
+]
 
 [tool.setuptools.packages.find]
 include = ["jopa*"]
