@@ -1,0 +1,60 @@
+{
+  "hypothesis": "A coupled proprio + visual-world JOPA should improve holdout world-state prediction, belief consistency, or reward/surprise separation compared with a visual-world block alone.",
+  "repo_id": "lerobot/pusht_keypoints",
+  "feature": "observation.environment_state",
+  "episodes": 206,
+  "train": 165,
+  "test": 41,
+  "seed": 0,
+  "shuffle": true,
+  "stride": 3,
+  "latent_dim": 8,
+  "pca_explained_variance": 1.0000007152557373,
+  "pca_cumulative_explained_variance": [
+    0.41353845596313477,
+    0.7511123418807983,
+    0.8887452483177185,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373,
+    1.0000007152557373
+  ],
+  "pca_components_for_95": 4,
+  "pca_components_for_99": 4,
+  "one_block_train_kl_p95": 15.754846206605917,
+  "two_block_train_kl_p95": 25.130208740051543,
+  "coupling_noise_var": 0.7879374948371519,
+  "success_reward_threshold": 0.92,
+  "test_successes": 5,
+  "comparison": {
+    "one_block_visual_world": {
+      "n": 41,
+      "mean_surprise": 14.529970922836187,
+      "mean_r2": 0.42759225422211844,
+      "mean_kl": 9.984485675335648,
+      "mean_coupling_kl": 0.0,
+      "mean_alert_rate": 0.04984020000632793,
+      "corr_surprise_reward": -0.2884842710666218,
+      "corr_terminal_reward": -0.6048461099912038
+    },
+    "two_block_proprio_visual": {
+      "n": 41,
+      "mean_surprise": 171.12750721214047,
+      "mean_r2": 0.42759225422211844,
+      "mean_kl": 15.93893204836108,
+      "mean_coupling_kl": 593.8206012184278,
+      "mean_alert_rate": 0.0496993730674177,
+      "corr_surprise_reward": -0.2961895179090601,
+      "corr_terminal_reward": -0.6048461099912038
+    }
+  }
+}
