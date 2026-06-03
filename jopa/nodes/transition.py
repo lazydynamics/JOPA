@@ -131,7 +131,7 @@ def ct_forward(m_x: Gaussian, c: CTCache, u=None) -> Gaussian:
         my = my + c.mB @ u
     Vy = c.mA @ Vx @ c.mA.T + c.mW_inv
     Ly = _solve_matrix(Vy)
-    return Gaussian(eta=jnp.linalg.solve(Vy, my), lam=Ly)
+    return Gaussian(eta=Ly @ my, lam=Ly)
 
 
 # ---------------------------------------------------------------------------
