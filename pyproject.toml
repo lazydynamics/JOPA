@@ -18,6 +18,9 @@ dependencies = [
     "pillow>=10.0",
 ]
 
+[project.scripts]
+jopa-validate = "jopa.validate:main"
+
 [project.optional-dependencies]
 viz = ["matplotlib>=3.8"]
 test = ["pytest>=8"]
