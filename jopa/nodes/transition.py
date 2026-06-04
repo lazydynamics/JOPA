@@ -48,6 +48,11 @@ def _E_AMA(EaaT, Ex_xx, dy, dx):
     return 0.5 * (result + result.T)
 
 
+def _solve_matrix(A):
+    """Return A⁻¹ via a linear solve, avoiding explicit matrix inversion."""
+    return jnp.linalg.solve(A, jnp.eye(A.shape[0], dtype=A.dtype))
+
+
 # ---------------------------------------------------------------------------
 # Precompute shared quantities for one VMP iteration
 # ---------------------------------------------------------------------------
@@ -71,7 +76,7 @@ class CTCache:
 
         self.mA = mA
         self.mW = mW
-        self.mW_inv = jnp.linalg.inv(mW)
+        self.mW_inv = _solve_matrix(mW)
         self.Va = Va
         self.ma = ma
         self.EaaT = jnp.outer(ma, ma) + Va        # E[a aᵀ]
@@ -125,8 +130,8 @@ def ct_forward(m_x: Gaussian, c: CTCache, u=None) -> Gaussian:
     if u is not None and c.mB is not None:
         my = my + c.mB @ u
     Vy = c.mA @ Vx @ c.mA.T + c.mW_inv
-    Ly = jnp.linalg.inv(Vy)
-    return Gaussian(eta=Ly @ my, lam=Ly)
+    Ly = _solve_matrix(Vy)
+    return Gaussian(eta=jnp.linalg.solve(Vy, my), lam=Ly)
 
 
 # ---------------------------------------------------------------------------
