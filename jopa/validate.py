@@ -51,12 +51,16 @@ def encode_observations(model: VAE, params, observations):
     return np.asarray(mu), np.asarray(jnp.clip(log_std, *LOG_STD_CLIP))
 
 
-def reconstruction_mse(model: VAE, params, observations) -> float:
+def reconstruction_mse_from_latents(model: VAE, params, observations, latents) -> float:
     batch = _as_vae_batch(observations, model.n_frames)
-    mu, _ = model.apply(params, batch, method=model.encode)
-    recon = model.apply(params, mu, method=model.decode)
+    recon = model.apply(params, jnp.asarray(latents), method=model.decode)
     target = batch.reshape(batch.shape[0], -1)
     return float(jnp.mean((recon - target) ** 2))
+
+
+def reconstruction_mse(model: VAE, params, observations) -> float:
+    latents, _ = encode_observations(model, params, observations)
+    return reconstruction_mse_from_latents(model, params, observations, latents)
 
 
 def fit_linear_dynamics(latents, controls=None):
@@ -100,14 +104,20 @@ def predict_one_step(latents, A, B=None, controls=None):
 
 
 def _load_dynamics(path: Path):
-    with path.open("rb") as f:
-        payload = pickle.load(f)
+    try:
+        with path.open("rb") as f:
+            payload = pickle.load(f)
+    except (OSError, EOFError, pickle.UnpicklingError, AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"could not load dynamics checkpoint {path}: {exc}") from exc
     if not isinstance(payload, dict) or "q_a" not in payload:
         raise ValueError("dynamics checkpoint must be a dict containing at least 'q_a'")
     from .distributions import gaussian_mean
 
     qa_mean = gaussian_mean(payload["q_a"])
-    dim = int(np.sqrt(len(qa_mean)))
+    n = len(qa_mean)
+    dim = int(np.sqrt(n))
+    if dim * dim != n:
+        raise ValueError(f"q_a mean length {n} is not a square transition matrix")
     A = np.asarray(qa_mean).reshape(dim, dim)
     B = None
     if payload.get("q_b") is not None:
@@ -139,7 +149,7 @@ def validate_checkpoint(
         source = "checkpoint"
     pred = predict_one_step(latents, A, B, controls if B is not None else None)
     one_step_mse = float(np.mean((latents[1:] - pred) ** 2))
-    recon_mse = reconstruction_mse(model, params, observations)
+    recon_mse = reconstruction_mse_from_latents(model, params, observations, latents)
 
     passed = True
     if max_reconstruction_mse is not None:
@@ -175,6 +185,7 @@ def main(argv=None) -> int:
     parser.add_argument("--vae", type=Path, required=True, help="Path to VAE params saved by jopa.nn.vae.save_params.")
     parser.add_argument("--sequence", type=Path, required=True, help="Numpy .npy observation sequence.")
     parser.add_argument("--latent-dim", type=int, required=True)
+    parser.add_argument("--ch", type=int, default=32, help="VAE channel width used when training the checkpoint.")
     parser.add_argument("--n-frames", type=int, default=1)
     parser.add_argument("--dynamics", type=Path, help="Optional pickle with q_a and optional q_b, as saved by examples.")
     parser.add_argument("--controls", type=Path, help="Optional .npy controls, length N-1.")
@@ -184,11 +195,14 @@ def main(argv=None) -> int:
     parser.add_argument("--max-one-step-latent-mse", type=float)
     args = parser.parse_args(argv)
 
-    model = VAE(latent_dim=args.latent_dim, n_frames=args.n_frames)
-    params = load_params(model, args.vae)
-    observations = np.load(args.sequence)
-    controls = _load_optional_controls(args.controls)
-    dynamics = _load_dynamics(args.dynamics) if args.dynamics is not None else None
+    model = VAE(latent_dim=args.latent_dim, ch=args.ch, n_frames=args.n_frames)
+    try:
+        params = load_params(model, args.vae)
+        observations = np.load(args.sequence)
+        controls = _load_optional_controls(args.controls)
+        dynamics = _load_dynamics(args.dynamics) if args.dynamics is not None else None
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     report = validate_checkpoint(
         model,
         params,
