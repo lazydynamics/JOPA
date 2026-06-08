@@ -122,13 +122,34 @@ actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
 | [`end_to_end_digits.py`](examples/end_to_end_digits.py) | Variational EM — refine the VAE encoder alongside the dynamics | |
 | [`pendulum.py`](examples/pendulum.py) | Image-only VAE + Variational EM + image-goal control — set a target frame, reach it by control | |
 
+## Checkpoint validation
+
+Before using a learned VAE/dynamics checkpoint for planning, run `jopa-validate`
+on a held-out observation sequence:
+
+```bash
+uv run jopa-validate \
+  --vae checkpoints/vae_d4.npz \
+  --sequence data/heldout_sequence.npy \
+  --latent-dim 4 \
+  --dynamics checkpoints/dynamics.pkl \
+  --max-reconstruction-mse 0.02 \
+  --min-latent-linearity-r2 0.8 \
+  --max-one-step-latent-mse 0.05
+```
+
+The report includes reconstruction MSE, latent linearity R², and one-step latent
+prediction MSE. Threshold flags make the command exit non-zero when a checkpoint
+is not good enough for planning, so examples and control loops can gate on the
+same quality signal.
+
 ## Install & run
 
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
 uv pip install -e ".[viz,test]"
 uv run python examples/pendulum.py
-uv run pytest                                 # 18 semantic tests
+uv run pytest                                 # semantic tests
 ```
 
 ## Design notes
