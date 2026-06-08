@@ -6,6 +6,7 @@ to learn a linear dynamical system in latent space and predict future frames.
 Matches the RxInfer.jl example:
   https://examples.rxinfer.com/categories/advanced_examples/learning_dynamics_with_vaes/
 """
+import argparse
 import os
 import jax.numpy as jnp
 import numpy as np
@@ -16,29 +17,46 @@ from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_de
 from jopa.data import load_mnist, rotating_mnist, rotation_sequence
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHECKPOINTS = os.path.join(ROOT, "checkpoints")
-OUTPUTS = os.path.join(ROOT, "outputs")
+_p = argparse.ArgumentParser(description=__doc__)
+_p.add_argument("--smoke", action="store_true", help="Run a tiny end-to-end configuration for CI.")
+_p.add_argument("--checkpoint-dir", default=os.path.join(ROOT, "checkpoints"))
+_p.add_argument("--output-dir", default=os.path.join(ROOT, "outputs"))
+args = _p.parse_args()
+
+CHECKPOINTS = args.checkpoint_dir
+OUTPUTS = args.output_dir
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
+
+latent_dim = 4
+vae_ch = 4 if args.smoke else 32
+train_epochs = 1 if args.smoke else 100
+train_digits = 1 if args.smoke else 10
+train_rotations = 4 if args.smoke else 36
+n_observed = 6 if args.smoke else 100
+n_predicted = 2 if args.smoke else 100
+vmp_iterations = 2 if args.smoke else 50
 
 # ── 1. Data ────────────────────────────────────────────────────────────────
 # Digits 0, 1, 8 — 10 exemplars each, 36 rotations (10°/step)
 print("Creating rotated MNIST dataset …")
 train_images, train_labels = rotating_mnist(
-    n_digits=10, n_rotations=36, digits=(0, 1, 8),
+    n_digits=train_digits, n_rotations=train_rotations, digits=(0, 1, 8),
 )
 print(f"  {train_images.shape[0]} training images (10°/step, binarised)")
 
 # ── 2. VAE ─────────────────────────────────────────────────────────────────
 vae_path = os.path.join(CHECKPOINTS, "vae_d4.npz")
-model = VAE(latent_dim=4)
+model = VAE(latent_dim=latent_dim, ch=vae_ch)
 
 try:
     params = load_params(model, vae_path)
     print(f"Loaded VAE from {vae_path}")
 except FileNotFoundError:
     print("Training VAE …")
-    model, params = train_vae(train_images, latent_dim=4, epochs=100, seed=42)
+    model, params = train_vae(
+        train_images, latent_dim=latent_dim, ch=vae_ch, epochs=train_epochs, seed=42, verbose=not args.smoke
+    )
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
@@ -46,13 +64,11 @@ vae = make_encode_decode(model, params)
 
 # ── 3. Inference ───────────────────────────────────────────────────────────
 # Build observation sequence: 100 rotated frames of one digit
-n_observed = 100
-n_predicted = 100
 step_deg = 360.0 / n_observed  # 3.6°/step
 
 all_imgs, all_labs = load_mnist()
 # Use the 5th digit-8 exemplar
-digit_idx = np.where(all_labs == 8)[0][4]
+digit_idx = np.where(all_labs == 8)[0][0 if args.smoke else 4]
 base_img = all_imgs[digit_idx]
 
 sequence = [jnp.array(f) for f in rotation_sequence(base_img, n_observed, step_deg=step_deg)]
@@ -63,7 +79,7 @@ def _vae_msg(image):
     return Gaussian(eta=lam @ mu, lam=lam)
 
 print(f"Running inference ({n_observed} observed + {n_predicted} predicted) …")
-block = Block("z", LearnedLinear(dim=4, n_iterations=50),
+block = Block("z", LearnedLinear(dim=latent_dim, n_iterations=vmp_iterations),
               observe=Frozen(_vae_msg, vae.decode))
 model = JointModel([block])
 model.learn([{"z": sequence}])
@@ -80,6 +96,8 @@ print(f"Determinant: {det:.4f}  (ideal: 1.0)")
 
 # ── 5. Visualise (optional) ────────────────────────────────────────────────
 try:
+    if args.smoke:
+        raise ImportError
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(2, 10, figsize=(20, 4))

@@ -40,6 +40,9 @@ _p.add_argument("--n-replans", type=int, default=30)
 _p.add_argument("--n-frames", type=int, default=4,
                 help="Window size K for the multi-frame VAE encoder.")
 _p.add_argument("--no-cache", action="store_true")
+_p.add_argument("--smoke", action="store_true", help="Run a tiny end-to-end configuration for CI.")
+_p.add_argument("--checkpoint-dir", help="Directory for learned checkpoints/cache.")
+_p.add_argument("--output-dir", help="Directory for visual outputs.")
 args = _p.parse_args()
 if args.n_frames < 1:
     _p.error("--n-frames must be >= 1")
@@ -51,13 +54,22 @@ if args.n_replans < 1:
     _p.error("--n-replans must be >= 1")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHECKPOINTS = os.path.join(ROOT, "checkpoints")
-OUTPUTS = os.path.join(ROOT, "outputs")
+CHECKPOINTS = args.checkpoint_dir or os.path.join(ROOT, "checkpoints")
+OUTPUTS = args.output_dir or os.path.join(ROOT, "outputs")
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
 
 K = args.n_frames
 latent_dim = 4
+vae_ch = 4 if args.smoke else 32
+vae_epochs = 1 if args.smoke else 100
+n_static_windows = 4 if args.smoke else 200
+n_trajectories = 2 if args.smoke else 10
+traj_len = max(K + 2, 5) if args.smoke else 80
+n_em = 1 if args.smoke else 30
+n_vmp = 2 if args.smoke else 10
+n_m_steps = 1 if args.smoke else 20
+plan_iterations = 5 if args.smoke else 200
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -66,7 +78,6 @@ latent_dim = 4
 
 env = SimplePendulum()
 print("Generating training trajectories …")
-n_trajectories, traj_len = 10, 80
 train_frames, train_actions = [], []
 for ep in range(n_trajectories):
     rng = np.random.RandomState(ep)
@@ -96,7 +107,7 @@ def windows_of(frames, K):
 
 
 vae_path = os.path.join(CHECKPOINTS, f"vae_pendulum_d{latent_dim}_K{K}.npz")
-vae_model = VAE(latent_dim=latent_dim, n_frames=K)
+vae_model = VAE(latent_dim=latent_dim, ch=vae_ch, n_frames=K)
 try:
     params = load_params(vae_model, vae_path)
     print(f"Loaded multi-frame VAE (K={K}) from {vae_path}")
@@ -106,14 +117,14 @@ except FileNotFoundError:
     for frames in train_frames:
         windows.append(windows_of(frames, K))     # (T-K+1, K, 28, 28)
     # Plus static "ω=0" coverage: K copies of the same frame across θ ∈ [-π, π].
-    for theta in np.linspace(-np.pi, np.pi, 200):
+    for theta in np.linspace(-np.pi, np.pi, n_static_windows):
         env.reset(theta=theta, theta_dot=0.0)
         f = np.array(env.render())
         windows.append(np.stack([f] * K)[None])
     windows = np.concatenate(windows, axis=0)
     # Reconstruct the WHOLE window (not just the last frame) → latent must encode motion.
     vae_model, params = train_vae(
-        windows, latent_dim=latent_dim, n_frames=K, epochs=100, seed=42,
+        windows, latent_dim=latent_dim, ch=vae_ch, n_frames=K, epochs=vae_epochs, seed=42, verbose=not args.smoke,
     )
     save_params(params, vae_path)
     print(f"Saved multi-frame VAE to {vae_path}")
@@ -127,7 +138,7 @@ print("\n══ System Identification (Variational EM) ══")
 em_cache = os.path.join(CHECKPOINTS, f"em_pendulum_K{K}.pkl")
 priors = near_identity_prior(latent_dim, cov=0.5)
 em_hparams = dict(
-    n_em=30, n_vmp=10, n_m_steps=20, lr=5e-5, beta_recon=1.0,
+    n_em=n_em, n_vmp=n_vmp, n_m_steps=n_m_steps, lr=5e-5, beta_recon=1.0,
     prior_b_cov=10.0, init_b_cov=100.0, seed=42, **priors,
 )
 fingerprint = {
@@ -294,7 +305,7 @@ for cycle in range(N_replan):
     dist = float(jnp.linalg.norm(gaussian_mean(learned_vae.message(current_window)) - mu_goal))
     h = 2 if dist < 0.8 else T_horizon
     obs = {"z": [current_window] + [None] * (h - 2) + [goal_window]}
-    actions = model.plan(obs, n_iterations=200)
+    actions = model.plan(obs, n_iterations=plan_iterations)
 
     for i in range(min(exec_steps, actions.shape[0])):
         u = float(np.clip(actions[i][0], -env.max_torque, env.max_torque))
@@ -309,6 +320,7 @@ for cycle in range(N_replan):
 
 print(f"\n  Final: θ={env.state[0]:.3f}  err={err(env.state[0]):.3f}")
 
-save_control_gif(thetas_log, actions_log, buffer[K - 1:], goal_theta,
-                 os.path.join(OUTPUTS, "pendulum.gif"),
-                 os.path.join(OUTPUTS, "pendulum_control.png"))
+if not args.smoke:
+    save_control_gif(thetas_log, actions_log, buffer[K - 1:], goal_theta,
+                     os.path.join(OUTPUTS, "pendulum.gif"),
+                     os.path.join(OUTPUTS, "pendulum_control.png"))

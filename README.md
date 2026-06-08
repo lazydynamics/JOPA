@@ -4,6 +4,8 @@
 dynamics, infers latent state, predicts the future, and plans actions. Every task
 is Bayesian inference; every step is a message.
 
+[![CI](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml/badge.svg)](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml)
+
 <p align="center">
   <img src="docs/hero.gif" width="92%" alt="JOPA factor graph with message passing on top; rotating-digit prediction and image-goal pendulum control below" />
 </p>
