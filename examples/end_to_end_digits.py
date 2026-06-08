@@ -4,6 +4,7 @@ Starts from a pre-trained VAE, then alternates E-step (VMP+BP inference)
 and M-step (VAE param updates against dynamics posterior) so the encoder
 produces latent codes consistent with the learned linear dynamics.
 """
+import argparse
 import os
 import jax.numpy as jnp
 import numpy as np
@@ -14,33 +15,50 @@ from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_de
 from jopa.data import load_mnist, rotating_mnist, rotation_sequence
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHECKPOINTS = os.path.join(ROOT, "checkpoints")
-OUTPUTS = os.path.join(ROOT, "outputs")
+_p = argparse.ArgumentParser(description=__doc__)
+_p.add_argument("--smoke", action="store_true", help="Run a tiny end-to-end configuration for CI.")
+_p.add_argument("--checkpoint-dir", default=os.path.join(ROOT, "checkpoints"))
+_p.add_argument("--output-dir", default=os.path.join(ROOT, "outputs"))
+args = _p.parse_args()
+
+CHECKPOINTS = args.checkpoint_dir
+OUTPUTS = args.output_dir
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
+
+train_epochs = 1 if args.smoke else 100
+train_digits = 1 if args.smoke else 10
+train_rotations = 4 if args.smoke else 36
+vae_ch = 4 if args.smoke else 32
+n_observed = 6 if args.smoke else 100
+n_predicted = 2 if args.smoke else 100
+baseline_vmp_iterations = 2 if args.smoke else 50
+em_iterations = 1 if args.smoke else 40
+em_vmp_iterations = 2 if args.smoke else 20
+em_m_steps = 1 if args.smoke else 30
 
 # ── 1. Pre-train or load VAE ────────────────────────────────────────────────
 latent_dim = 4
 vae_path = os.path.join(CHECKPOINTS, "vae_e2e_d4.npz")
-vae_model = VAE(latent_dim=latent_dim)
+vae_model = VAE(latent_dim=latent_dim, ch=vae_ch)
 
 print("Preparing data …")
-train_images, _ = rotating_mnist(n_digits=10, n_rotations=36, digits=(0, 1, 8))
+train_images, _ = rotating_mnist(n_digits=train_digits, n_rotations=train_rotations, digits=(0, 1, 8))
 
 try:
     params = load_params(vae_model, vae_path)
     print(f"Loaded VAE from {vae_path}")
 except FileNotFoundError:
     print("Pre-training VAE …")
-    vae_model, params = train_vae(train_images, latent_dim=latent_dim, epochs=100, seed=42)
+    vae_model, params = train_vae(
+        train_images, latent_dim=latent_dim, ch=vae_ch, epochs=train_epochs, seed=42, verbose=not args.smoke
+    )
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
 params_pretrained = params  # keep a copy for baseline
 
 # ── 2. Build observation sequence ───────────────────────────────────────────
-n_observed = 100
-n_predicted = 100
 step_deg = 360.0 / n_observed
 
 all_imgs, all_labs = load_mnist()
@@ -62,7 +80,7 @@ def _frozen_msg(image):
     lam = jnp.diag(1.0 / jnp.exp(2.0 * log_std))
     return Gaussian(eta=lam @ mu, lam=lam)
 
-baseline = JointModel([Block("z", LearnedLinear(dim=latent_dim, n_iterations=50),
+baseline = JointModel([Block("z", LearnedLinear(dim=latent_dim, n_iterations=baseline_vmp_iterations),
                               observe=Frozen(_frozen_msg, vae_pretrained.decode))])
 baseline.learn([{"z": sequence}])
 baseline_out = baseline.smooth({"z": sequence}, n_predict=n_predicted)["z"]
@@ -73,11 +91,11 @@ eigs_base = np.linalg.eigvals(np.array(H_base))
 print(f"  det(A)={det_base:.4f}  |λ|={np.abs(eigs_base)}")
 
 # ── 4. Variational EM via JointModel + LearnedVAE ──────────────────────────
-print("\n── Variational EM (40 EM iters) ──")
-learned_vae = LearnedVAE(vae_model, params_pretrained, lr=5e-5, n_m_steps=30, beta_recon=1.0, seed=42)
-e2e = JointModel([Block("z", LearnedLinear(dim=latent_dim, n_iterations=20),
+print(f"\n── Variational EM ({em_iterations} EM iters) ──")
+learned_vae = LearnedVAE(vae_model, params_pretrained, lr=5e-5, n_m_steps=em_m_steps, beta_recon=1.0, seed=42)
+e2e = JointModel([Block("z", LearnedLinear(dim=latent_dim, n_iterations=em_vmp_iterations),
                          observe=learned_vae)])
-e2e.learn([{"z": sequence}], n_em=40)
+e2e.learn([{"z": sequence}], n_em=em_iterations)
 e2e_out = e2e.smooth({"z": sequence}, n_predict=n_predicted)["z"]
 
 H_e2e = e2e.blocks[0].transition.A
@@ -91,6 +109,8 @@ print(f"  Expected step: {step_deg:.2f}°")
 
 # ── 5. Visualise ────────────────────────────────────────────────────────────
 try:
+    if args.smoke:
+        raise ImportError
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
 

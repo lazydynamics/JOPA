@@ -4,6 +4,7 @@ A digit rotates with varying angular velocity driven by control actions.
 The model learns A (autonomous dynamics, prior ~ I) and B (control effect),
 then predicts different futures depending on the action applied.
 """
+import argparse
 import os
 import jax.numpy as jnp
 import numpy as np
@@ -14,25 +15,41 @@ from jopa.distributions import Gaussian, near_identity_prior
 from jopa.blocks import JointModel, Block, LearnedLinear, Frozen
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHECKPOINTS = os.path.join(ROOT, "checkpoints")
-OUTPUTS = os.path.join(ROOT, "outputs")
+_p = argparse.ArgumentParser(description=__doc__)
+_p.add_argument("--smoke", action="store_true", help="Run a tiny end-to-end configuration for CI.")
+_p.add_argument("--checkpoint-dir", default=os.path.join(ROOT, "checkpoints"))
+_p.add_argument("--output-dir", default=os.path.join(ROOT, "outputs"))
+args = _p.parse_args()
+
+CHECKPOINTS = args.checkpoint_dir
+OUTPUTS = args.output_dir
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
+
+train_epochs = 1 if args.smoke else 100
+train_digits = 1 if args.smoke else 10
+train_rotations = 4 if args.smoke else 36
+vae_ch = 4 if args.smoke else 32
+sequence_len = 8 if args.smoke else 120
+vmp_iterations = 2 if args.smoke else 100
+n_predict = 2 if args.smoke else 80
 
 # ── 1. VAE ─────────────────────────────────────────────────────────────────
 latent_dim = 4
 vae_path = os.path.join(CHECKPOINTS, "vae_ctrl_d4.npz")
-model = VAE(latent_dim=latent_dim)
+model = VAE(latent_dim=latent_dim, ch=vae_ch)
 
 print("Preparing data …")
-train_images, _ = rotating_mnist(n_digits=10, n_rotations=36, digits=(0, 1, 8))
+train_images, _ = rotating_mnist(n_digits=train_digits, n_rotations=train_rotations, digits=(0, 1, 8))
 
 try:
     params = load_params(model, vae_path)
     print(f"Loaded VAE from {vae_path}")
 except FileNotFoundError:
     print("Training VAE …")
-    model, params = train_vae(train_images, latent_dim=latent_dim, epochs=100, seed=42)
+    model, params = train_vae(
+        train_images, latent_dim=latent_dim, ch=vae_ch, epochs=train_epochs, seed=42, verbose=not args.smoke
+    )
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
@@ -46,7 +63,7 @@ digit_idx = np.where(all_labs == 8)[0][0]
 # latent-vs-degrees scaling.
 print("Generating controlled rotation sequence …")
 frames, actions, angles = make_controlled_sequence(
-    digit_idx=digit_idx, n_frames=120, seed=42,
+    digit_idx=digit_idx, n_frames=sequence_len, seed=42,
 )
 n_observed = len(frames)
 
@@ -60,8 +77,6 @@ print(f"  angle range: [{angles.min():.0f}°, {angles.max():.0f}°]")
 # ── 3. Learn A and B ──────────────────────────────────────────────────────
 print("\n── Learning A and B (prior: A ~ I) ──")
 
-n_predict = 80
-
 def _vae_msg(image):
     mu, log_std = vae.encode(image)
     lam = jnp.diag(1.0 / jnp.exp(2.0 * log_std))
@@ -71,7 +86,7 @@ priors = near_identity_prior(latent_dim, cov=0.1)
 block = Block(
     "z",
     LearnedLinear(
-        dim=latent_dim, du=1, n_iterations=100,
+        dim=latent_dim, du=1, n_iterations=vmp_iterations,
         prior_a_mean=priors["prior_a_mean"], prior_a_cov=priors["prior_a_cov"],
         init_a_cov=priors["init_a_cov"],
         prior_b_cov=10.0, init_b_cov=100.0,
@@ -121,6 +136,8 @@ for name, pred_actions in action_regimes.items():
 
 # ── 5. Visualise ────────────────────────────────────────────────────────────
 try:
+    if args.smoke:
+        raise ImportError
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
 
