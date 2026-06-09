@@ -129,7 +129,7 @@ def _load_pickle_dynamics(path: Path):
 
     try:
         qa_mean = np.asarray(gaussian_mean(payload["q_a"]), dtype=np.float64).reshape(-1)
-    except Exception as exc:
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
         raise ValueError(f"dynamics checkpoint contains invalid q_a payload: {exc}") from exc
     n = qa_mean.size
     dim = int(np.sqrt(n))
@@ -140,7 +140,7 @@ def _load_pickle_dynamics(path: Path):
     if payload.get("q_b") is not None:
         try:
             qb_mean = np.asarray(gaussian_mean(payload["q_b"]), dtype=np.float64).reshape(-1)
-        except Exception as exc:
+        except (ValueError, TypeError, AttributeError, KeyError) as exc:
             raise ValueError(f"dynamics checkpoint contains invalid q_b payload: {exc}") from exc
         if qb_mean.size % dim != 0:
             raise ValueError(f"q_b mean length {qb_mean.size} is incompatible with transition dim {dim}")
