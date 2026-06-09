@@ -387,6 +387,8 @@ class LinearCoupling:
         variance and offset norm. `x_from` and `x_to` are arrays with shape
         `(n_samples, dim)`.
         """
+        if noise_floor <= 0:
+            raise ValueError("noise_floor must be strictly positive")
         x_from = jnp.asarray(x_from)
         x_to = jnp.asarray(x_to)
         n = min(x_from.shape[0], x_to.shape[0])

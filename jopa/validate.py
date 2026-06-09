@@ -103,7 +103,21 @@ def predict_one_step(latents, A, B=None, controls=None):
     return pred
 
 
-def _load_dynamics(path: Path):
+def _load_npz_dynamics(path: Path):
+    try:
+        with np.load(path) as data:
+            A = np.asarray(data["A"], dtype=np.float64)
+            B = np.asarray(data["B"], dtype=np.float64) if "B" in data.files else None
+    except (OSError, KeyError, ValueError) as exc:
+        raise ValueError(f"could not load dynamics checkpoint {path}: {exc}") from exc
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError(f"dynamics checkpoint A must be square, got shape {A.shape}")
+    if B is not None and (B.ndim != 2 or B.shape[0] != A.shape[0]):
+        raise ValueError(f"dynamics checkpoint B shape {B.shape} is incompatible with A shape {A.shape}")
+    return A, B
+
+
+def _load_pickle_dynamics(path: Path):
     try:
         with path.open("rb") as f:
             payload = pickle.load(f)
@@ -113,17 +127,36 @@ def _load_dynamics(path: Path):
         raise ValueError("dynamics checkpoint must be a dict containing at least 'q_a'")
     from .distributions import gaussian_mean
 
-    qa_mean = gaussian_mean(payload["q_a"])
-    n = len(qa_mean)
+    try:
+        qa_mean = np.asarray(gaussian_mean(payload["q_a"]), dtype=np.float64).reshape(-1)
+    except Exception as exc:
+        raise ValueError(f"dynamics checkpoint contains invalid q_a payload: {exc}") from exc
+    n = qa_mean.size
     dim = int(np.sqrt(n))
     if dim * dim != n:
         raise ValueError(f"q_a mean length {n} is not a square transition matrix")
-    A = np.asarray(qa_mean).reshape(dim, dim)
+    A = qa_mean.reshape(dim, dim)
     B = None
     if payload.get("q_b") is not None:
-        qb_mean = gaussian_mean(payload["q_b"])
-        B = np.asarray(qb_mean).reshape(dim, -1)
+        try:
+            qb_mean = np.asarray(gaussian_mean(payload["q_b"]), dtype=np.float64).reshape(-1)
+        except Exception as exc:
+            raise ValueError(f"dynamics checkpoint contains invalid q_b payload: {exc}") from exc
+        if qb_mean.size % dim != 0:
+            raise ValueError(f"q_b mean length {qb_mean.size} is incompatible with transition dim {dim}")
+        B = qb_mean.reshape(dim, -1)
     return A, B
+
+
+def _load_dynamics(path: Path, *, trusted_pickle: bool = False):
+    if path.suffix == ".npz":
+        return _load_npz_dynamics(path)
+    if not trusted_pickle:
+        raise ValueError(
+            "pickle dynamics checkpoints can execute code; use a .npz dynamics checkpoint "
+            "or pass --trusted-dynamics-pickle for locally generated files"
+        )
+    return _load_pickle_dynamics(path)
 
 
 def validate_checkpoint(
@@ -187,7 +220,12 @@ def main(argv=None) -> int:
     parser.add_argument("--latent-dim", type=int, required=True)
     parser.add_argument("--ch", type=int, default=32, help="VAE channel width used when training the checkpoint.")
     parser.add_argument("--n-frames", type=int, default=1)
-    parser.add_argument("--dynamics", type=Path, help="Optional pickle with q_a and optional q_b, as saved by examples.")
+    parser.add_argument("--dynamics", type=Path, help="Optional .npz dynamics with A/B, or trusted pickle with q_a/q_b.")
+    parser.add_argument(
+        "--trusted-dynamics-pickle",
+        action="store_true",
+        help="Allow loading a local trusted pickle dynamics checkpoint. Never use this for untrusted files.",
+    )
     parser.add_argument("--controls", type=Path, help="Optional .npy controls, length N-1.")
     parser.add_argument("--output", type=Path, help="Optional JSON report path.")
     parser.add_argument("--max-reconstruction-mse", type=float)
@@ -200,7 +238,10 @@ def main(argv=None) -> int:
         params = load_params(model, args.vae)
         observations = np.load(args.sequence)
         controls = _load_optional_controls(args.controls)
-        dynamics = _load_dynamics(args.dynamics) if args.dynamics is not None else None
+        dynamics = (
+            _load_dynamics(args.dynamics, trusted_pickle=args.trusted_dynamics_pickle)
+            if args.dynamics is not None else None
+        )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     report = validate_checkpoint(
