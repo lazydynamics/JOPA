@@ -45,6 +45,14 @@ def vague_gaussian(d: int) -> Gaussian:
     return Gaussian(eta=jnp.zeros(d), lam=jnp.zeros((d, d)))
 
 
+def gaussian_logpdf(g: Gaussian, x: jnp.ndarray) -> jnp.ndarray:
+    """Log density of `x` under a Gaussian in information form."""
+    d = g.eta.shape[0]
+    diff = x - gaussian_mean(g)
+    return -0.5 * (diff @ g.lam @ diff - jnp.linalg.slogdet(g.lam)[1]
+                   + d * jnp.log(2.0 * jnp.pi))
+
+
 def near_identity_prior(latent_dim: int, cov: float = 0.5) -> dict:
     """Kwargs centring vec(A) on the identity matrix — useful when you expect
     small per-step changes in the latent state. Drop into LearnedLinear with

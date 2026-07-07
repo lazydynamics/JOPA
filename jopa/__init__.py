@@ -2,7 +2,7 @@
 from .distributions import (
     Gaussian, Wishart,
     combine_gaussians, gaussian_mean, gaussian_mean_cov, gaussian_prior,
-    near_identity_prior, wishart_mean, vague_gaussian,
+    gaussian_logpdf, near_identity_prior, wishart_mean, vague_gaussian,
 )
 from .blocks import (
     Block, JointModel,
@@ -14,7 +14,8 @@ from .blocks import (
 __all__ = [
     "Gaussian", "Wishart",
     "combine_gaussians", "gaussian_mean", "gaussian_mean_cov",
-    "gaussian_prior", "near_identity_prior", "wishart_mean", "vague_gaussian",
+    "gaussian_prior", "gaussian_logpdf", "near_identity_prior",
+    "wishart_mean", "vague_gaussian",
     "Block", "JointModel",
     "Observation", "Frozen", "LearnedVAE",
     "LearnedLinear", "LearnedAffine", "KnownPhysics",

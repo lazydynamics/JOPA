@@ -135,6 +135,7 @@ def train_vae(
     epochs: int = 200,
     batch_size: int = 64,
     lr: float = 1e-3,
+    beta: float = 1.0,
     seed: int = 0,
     verbose: bool = True,
     callback: Callable | None = None,
@@ -146,7 +147,8 @@ def train_vae(
     reconstructs the whole K-frame window, so the latent must encode motion.
     `n_frames` must equal K.
 
-    β-annealing from 0.1 → 1.0 over the first 15 epochs.
+    β-annealing from 0.1 → `beta` over the first 15 epochs; `beta` < 1 keeps
+    more information in the latent (less KL pruning).
     """
     images = jnp.asarray(images)
     if n_frames == 1:
@@ -188,17 +190,17 @@ def train_vae(
         idx = jax.random.permutation(perm_rng, n)
         imgs = images[idx]
         targs = targets_arr[idx]
-        beta = min(1.0, 0.1 + 0.9 * (epoch - 1) / 15)
+        beta_t = min(beta, 0.1 + (beta - 0.1) * (epoch - 1) / 15)
         losses = []
         for i in range(0, n, batch_size):
             rng, z_rng = jax.random.split(rng)
             params, opt_state, loss = step(
                 params, opt_state,
                 imgs[i : i + batch_size], targs[i : i + batch_size],
-                z_rng, beta,
+                z_rng, beta_t,
             )
             losses.append(float(loss))
-        pbar.set_postfix(loss=f"{np.mean(losses):.1f}", beta=f"{beta:.2f}")
+        pbar.set_postfix(loss=f"{np.mean(losses):.1f}", beta=f"{beta_t:.2f}")
         if callback is not None:
             callback(epoch, params, float(np.mean(losses)))
     return model, params
