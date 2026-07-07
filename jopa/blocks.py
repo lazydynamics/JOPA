@@ -371,13 +371,24 @@ class LinearCoupling:
         self.offset = jnp.zeros(d_z) if offset is None else jnp.asarray(offset).reshape(d_z)
 
     @classmethod
-    def fit(cls, from_name: str, to_name: str, x_from, x_to, ridge: float = 1e-3, affine: bool = True):
+    def fit(
+        cls,
+        from_name: str,
+        to_name: str,
+        x_from,
+        x_to,
+        ridge: float = 1e-3,
+        affine: bool = True,
+        noise_floor: float = 1e-8,
+    ):
         """Fit `x_to ~= M @ x_from + offset` by ridge regression.
 
         Returns `(coupling, diagnostics)` where diagnostics includes residual
         variance and offset norm. `x_from` and `x_to` are arrays with shape
         `(n_samples, dim)`.
         """
+        if noise_floor <= 0:
+            raise ValueError("noise_floor must be strictly positive")
         x_from = jnp.asarray(x_from)
         x_to = jnp.asarray(x_to)
         n = min(x_from.shape[0], x_to.shape[0])
@@ -394,7 +405,7 @@ class LinearCoupling:
         offset = coef[:, -1] if affine else jnp.zeros(x_to.shape[1], dtype=x_to.dtype)
         pred = design @ coef.T
         residual = x_to - pred
-        noise_var = float(jnp.mean(residual ** 2) + ridge)
+        noise_var = max(float(jnp.mean(residual ** 2)), noise_floor)
         coupling = cls(from_name, to_name, M=M, offset=offset, noise_prec=1.0 / noise_var)
         diagnostics = {
             "noise_var": noise_var,
