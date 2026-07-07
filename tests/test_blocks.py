@@ -295,6 +295,20 @@ def test_linear_coupling_fit_keeps_affine_offset():
     assert diagnostics["residual_rmse"] < 0.03
 
 
+def test_linear_coupling_fit_keeps_ridge_separate_from_noise_floor():
+    x = np.zeros((20, 2))
+    z = np.broadcast_to(np.array([0.25, -0.5]), (20, 2))
+    _, diagnostics = LinearCoupling.fit("s", "z", x, z, ridge=10.0)
+    assert diagnostics["noise_var"] <= 1.1e-8
+    assert diagnostics["residual_rmse"] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_linear_coupling_fit_rejects_nonpositive_noise_floor():
+    x = np.zeros((2, 1))
+    with pytest.raises(ValueError, match="noise_floor must be strictly positive"):
+        LinearCoupling.fit("s", "z", x, x, noise_floor=0.0)
+
+
 def test_linear_coupling_offset_affects_fusion_mean():
     coupling = LinearCoupling("s", "z", M=jnp.eye(2), offset=jnp.array([2.0, -1.0]), noise_prec=1e3)
     s_belief = _msg([0.0, 0.0], 1.0)
