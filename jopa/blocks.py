@@ -97,6 +97,7 @@ class LearnedVAE(Observation):
         self.model = model
         self.params = params
         self.n_frames = getattr(model, "n_frames", 1)
+        self.img_size = getattr(model, "img_size", 28)
         self.n_m_steps = n_m_steps
         self.beta_recon = beta_recon
         self._tx = optax.adam(lr)
@@ -105,7 +106,7 @@ class LearnedVAE(Observation):
         self.loss_history: list[float] = []
 
     def _shape(self, x):
-        return _as_batch(x, self.n_frames)
+        return _as_batch(x, self.n_frames, self.img_size)
 
     def message(self, image) -> Gaussian:
         mu, log_std = self.model.apply(self.params, self._shape(image), method=self.model.encode)
@@ -130,7 +131,40 @@ class LearnedVAE(Observation):
 
     def decode(self, z):
         return _latest_frame(self.model.apply(self.params, jnp.asarray(z).reshape(1, -1),
-                                              method=self.model.decode))
+                                              method=self.model.decode), self.img_size)
+
+
+class LearnedJEPA(Observation):
+    """Frozen predictive encoder as an observation: image → Gaussian message.
+
+    Wraps a `JEPAEncoder` pretrained by `jopa.nn.jepa.train_jepa` (a latent
+    prediction objective, not pixel reconstruction — see that module). The
+    encoder is a deterministic map `image → μ`, so the message carries a fixed
+    diagonal precision `obs_prec·I`: the sensor reports a mean it is uniformly
+    confident in. Everything downstream — q(A,B,W) learning, planning, online
+    adaptation — is variational message passing on these messages.
+
+    Not learnable online (`learnable = False`): the encoder is the fixed
+    sensor, and all adaptation happens in the conjugate dynamics posterior.
+    """
+    learnable = False
+
+    def __init__(self, model, params, obs_prec=1e2):
+        self.model = model
+        self.params = params
+        self.img_size = getattr(model, "img_size", 28)
+        self.obs_prec = float(obs_prec)
+        self._lam = None
+
+    def _encode(self, image):
+        x = jnp.asarray(image).reshape(1, self.img_size, self.img_size)
+        return self.model.apply(self.params, x)[0]
+
+    def message(self, image) -> Gaussian:
+        mu = self._encode(image)
+        if self._lam is None:
+            self._lam = self.obs_prec * jnp.eye(mu.shape[0])
+        return Gaussian(eta=self._lam @ mu, lam=self._lam)
 
 
 def _as_observation(obj) -> Observation:

@@ -38,10 +38,10 @@ def _as_vae_batch(observations, n_frames: int):
         if obs.ndim == 4 and obs.shape[1] == 1:
             obs = obs[:, 0]
         if obs.ndim != 3:
-            raise ValueError(f"n_frames=1 expects observations shaped (N, 28, 28), got {obs.shape}")
+            raise ValueError(f"n_frames=1 expects observations shaped (N, S, S), got {obs.shape}")
         return obs
     if obs.ndim != 4 or obs.shape[1] != n_frames:
-        raise ValueError(f"n_frames={n_frames} expects observations shaped (N, {n_frames}, 28, 28), got {obs.shape}")
+        raise ValueError(f"n_frames={n_frames} expects observations shaped (N, {n_frames}, S, S), got {obs.shape}")
     return obs
 
 
@@ -220,6 +220,7 @@ def main(argv=None) -> int:
     parser.add_argument("--latent-dim", type=int, required=True)
     parser.add_argument("--ch", type=int, default=32, help="VAE channel width used when training the checkpoint.")
     parser.add_argument("--n-frames", type=int, default=1)
+    parser.add_argument("--img-size", type=int, default=28, help="VAE frame size (28 or 64).")
     parser.add_argument("--dynamics", type=Path, help="Optional .npz dynamics with A/B, or trusted pickle with q_a/q_b.")
     parser.add_argument(
         "--trusted-dynamics-pickle",
@@ -233,7 +234,8 @@ def main(argv=None) -> int:
     parser.add_argument("--max-one-step-latent-mse", type=float)
     args = parser.parse_args(argv)
 
-    model = VAE(latent_dim=args.latent_dim, ch=args.ch, n_frames=args.n_frames)
+    model = VAE(latent_dim=args.latent_dim, ch=args.ch, n_frames=args.n_frames,
+                img_size=args.img_size)
     try:
         params = load_params(model, args.vae)
         observations = np.load(args.sequence)

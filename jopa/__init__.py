@@ -6,7 +6,7 @@ from .distributions import (
 )
 from .blocks import (
     Block, JointModel,
-    Observation, Frozen, LearnedVAE,
+    Observation, Frozen, LearnedVAE, LearnedJEPA,
     LearnedLinear, LearnedAffine, KnownPhysics,
     LinearCoupling,
 )
@@ -17,7 +17,7 @@ __all__ = [
     "gaussian_prior", "gaussian_logpdf", "near_identity_prior",
     "wishart_mean", "vague_gaussian",
     "Block", "JointModel",
-    "Observation", "Frozen", "LearnedVAE",
+    "Observation", "Frozen", "LearnedVAE", "LearnedJEPA",
     "LearnedLinear", "LearnedAffine", "KnownPhysics",
     "LinearCoupling",
 ]

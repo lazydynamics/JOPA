@@ -332,3 +332,49 @@ def test_filter_composes_blocks_and_incorporates_observations():
     # high-precision observations → first-step beliefs sit on the observations.
     assert np.allclose(np.array(gaussian_mean(beliefs["z"])), [1.0, 0.5], atol=1e-2)
     assert np.allclose(np.array(gaussian_mean(beliefs["p"])), [0.1, 0.0], atol=1e-2)
+
+
+def test_vae_supports_64px_frames():
+    """img_size=64 encodes/decodes at the right shapes; 28 stays the default."""
+    model = VAE(latent_dim=3, ch=8, img_size=64)
+    rng = jax.random.PRNGKey(0)
+    params = model.init({"params": rng}, jnp.ones((1, 64, 64)), rng)
+    mu, log_std = model.apply(params, jnp.ones((2, 64, 64)), method=model.encode)
+    recon = model.apply(params, mu, method=model.decode)
+    assert mu.shape == (2, 3) and log_std.shape == (2, 3)
+    assert recon.shape == (2, 64 * 64)
+
+
+def test_jepa_encoder_message_composes_into_block():
+    """JEPA encoder pretrains, emits a Gaussian message, and plugs into a
+    Block whose dynamics are then learned by VMP — the encoder is a frozen
+    sensor; learning stays message passing."""
+    from jopa.nn.jepa import train_jepa
+    from jopa.blocks import LearnedJEPA
+
+    # Tiny synthetic: a bright disc whose position rotates linearly in a 28×28
+    # frame — a latent-linear image stream the predictive encoder can encode.
+    rng = np.random.RandomState(0)
+    A = np.array([[0.0, -1.0], [1.0, 0.0]]) * 0.15 + np.eye(2)
+    yy, xx = np.mgrid[0:28, 0:28]
+    def frame(s):
+        cx, cy = 14 + 8 * s[0], 14 + 8 * s[1]
+        return np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8.0).astype(np.float32)
+    seqs = []
+    for _ in range(8):
+        s = rng.uniform(-0.6, 0.6, 2)
+        fs = []
+        for _ in range(12):
+            fs.append(frame(s)); s = A @ s
+        seqs.append(np.stack(fs))
+
+    model, params = train_jepa(seqs, latent_dim=3, img_size=28,
+                               iterations=30, batch_size=64, verbose=False)
+    obs = LearnedJEPA(model, params, obs_prec=1e2)
+    msg = obs.message(seqs[0][0])
+    assert msg.eta.shape == (3,) and msg.lam.shape == (3, 3)
+    assert obs.learnable is False
+
+    block = Block("z", LearnedLinear(dim=3, n_iterations=5), observe=obs)
+    means, covs = block.transition.learn([[obs.message(f) for f in seqs[0]]])
+    assert means.shape[1] == 3            # VMP produced smoothed latent means
