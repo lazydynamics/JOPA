@@ -68,16 +68,51 @@ of the chain.
 
 ```python
 model = JointModel([
-    Block("z", LearnedLinear(dim=4, du=1), observe=encoder),
+    Block("z", LearnedLinear(dim=4, du=1, offset=True), observe=encoder),
 ])
 
 while True:
     obs     = sense()
     if learning_on:
-        model.learn([trajectory_so_far])     # E-step (VMP) + optional M-step
+        model.learn([recent_chunk])          # E-step (VMP) + optional M-step
+        model.remember(forget=0.5)           # posterior becomes tomorrow's prior
     actions = model.plan(obs_horizon)        # VMP on the action sequence
     act(actions[0])
 ```
+
+## Continual learning: a world model that never stops learning
+
+<p align="center">
+  <img src="docs/boat.gif" width="92%" alt="Boat on shifting currents: the adaptive world model tracks regime changes online while a frozen twin gets blown off its goals" />
+</p>
+
+Because every belief is a conjugate posterior, *online adaptation is just more
+inference* — no gradient fine-tuning of the dynamics, no replay buffer.
+[`boat.py`](examples/boat.py) streams an image-only agent through a world whose
+physics change mid-run: a current switches on, then veers. Each part of the
+posterior is treated according to what it is: the kinematic structure `A` is
+pinned by its prior, thrust `B` accumulates evidence forever, the noise
+calibration `W` is learned offline and held, and the current `c` — the volatile
+bit — carries a random-walk prior, so its posterior diffuses a little every
+chunk and fresh evidence can always re-aim it.
+
+<p align="center">
+  <img src="docs/boat_adapt.png" width="80%" alt="Surprise spikes at the hidden regime changes; the current posterior re-aims with honest credible bands; the adaptive agent outperforms the frozen twin" />
+</p>
+
+One-step predictive surprise spikes exactly at the hidden changes (top), the
+posterior over the current re-aims within a few chunks with honest ±2σ bands
+(middle), and the adaptive agent holds its goals where a frozen world model —
+the standard "train offline, deploy frozen" regime — is blown off course
+(bottom).
+
+And the agent loop itself, slowed down around the first regime change —
+**plan** (VMP on the action sequence) · **act** (thrust + exploration dither) ·
+**adapt** (absorb the chunk, `remember`, diffuse the drift):
+
+<p align="center">
+  <img src="docs/boat_loop.gif" width="88%" alt="The plan-act-adapt loop slowed down: planned trajectory, applied thrust, and the current posterior re-aiming as chunks are absorbed" />
+</p>
 
 ## Building blocks
 
@@ -85,7 +120,8 @@ while True:
 |---|---|
 | `Gaussian`, `Wishart` | Natural-parameter distributions — every message lives here |
 | `Block(name, transition, observe)` | One latent-state slice |
-| `LearnedLinear` | `x' ~ N(A·x + B·u, W⁻¹)`, conjugate VMP for `q(A,B,W)` |
+| `LearnedLinear` | `x' ~ N(A·x + B·u [+ c], W⁻¹)`, conjugate VMP for `q(A,B,W)`; `offset=True` learns a constant drift `c` |
+| `LearnedLinear.remember(forget)` | Posterior becomes the next prior — conjugate continual learning with exponential forgetting |
 | `LearnedAffine` | `y = A·x + B·u + ε`, fully-observed regression via the same VMP |
 | `KnownPhysics` | Re-linearized gray-box dynamics |
 | `Frozen(encode, decode)` | Fixed encoder + optional renderer |
@@ -121,14 +157,15 @@ actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
 | [`controlled_digits.py`](examples/controlled_digits.py) | Add a control input; learn `B`, predict under action regimes | |
 | [`end_to_end_digits.py`](examples/end_to_end_digits.py) | Variational EM — refine the VAE encoder alongside the dynamics | |
 | [`pendulum.py`](examples/pendulum.py) | Image-only VAE + Variational EM + image-goal control — set a target frame, reach it by control | |
+| [`boat.py`](examples/boat.py) | **Continual learning from pixels** — the current changes mid-stream; the posterior notices, re-aims, and control recovers, all by conjugate updates | <img src="docs/boat_adapt.png" width="110" alt="Online adaptation money plot"/> |
 
 ## Install & run
 
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
 uv pip install -e ".[viz,test]"
-uv run python examples/pendulum.py
-uv run pytest                                 # 18 semantic tests
+uv run python examples/boat.py
+uv run pytest                                 # 38 semantic tests
 ```
 
 ## Design notes
@@ -143,6 +180,10 @@ uv run pytest                                 # 18 semantic tests
 * **Composability.** Adding a modality is appending a `Block`; information flows
   across slices through `LinearCoupling`. The `JointModel` knows only blocks and
   messages — not images, proprioception, or actions.
+* **Continual learning is conjugacy.** `remember` folds each posterior into the
+  next prior in natural parameters. Forgetting and parameter drift are *priors*
+  (exponential forgetting, random-walk diffusion on the volatile parameters),
+  not optimizer tricks.
 
 ## References
 
