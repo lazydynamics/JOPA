@@ -363,7 +363,7 @@ for i, (name, cur) in enumerate(ACTS):
 if boat_viz.save_money_plot(os.path.join(OUTPUTS, "boat_adapt.png"),
                             log_on, log_off, err_on, err_off, ACTS, args.act_steps):
     boat_viz.save_hero_gif(os.path.join(OUTPUTS, "boat.gif"),
-                           log_on, log_off, ACTS, args.act_steps)
+                           log_on, log_off, err_on, err_off, ACTS, args.act_steps)
     boat_viz.save_loop_gif(os.path.join(OUTPUTS, "boat_loop.gif"),
                            log_on, log_off, ACTS, args.act_steps,
                            args.chunk, args.exec_steps)
