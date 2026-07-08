@@ -153,11 +153,13 @@ class LearnedJEPA(Observation):
         self.model = model
         self.params = params
         self.img_size = getattr(model, "img_size", 28)
+        self.n_frames = getattr(model, "n_frames", 1)
         self.obs_prec = float(obs_prec)
         self._lam = None
 
     def _encode(self, image):
-        x = jnp.asarray(image).reshape(1, self.img_size, self.img_size)
+        S, K = self.img_size, self.n_frames
+        x = jnp.asarray(image).reshape((1, S, S) if K == 1 else (1, K, S, S))
         return self.model.apply(self.params, x)[0]
 
     def message(self, image) -> Gaussian:

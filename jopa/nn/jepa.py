@@ -29,16 +29,23 @@ from tqdm import tqdm
 
 
 class JEPAEncoder(nn.Module):
-    """Deterministic conv encoder  `(B, S, S) → (B, d)`  (S = img_size, 28|64).
-    Mirrors the VAE encoder trunk so both bootstraps share an architecture."""
+    """Deterministic conv encoder  `(B, [K,] S, S) → (B, d)`  (S = img_size,
+    28|64). `n_frames=K>1` stacks K consecutive frames as input channels so the
+    latent can encode motion (velocity) — required for second-order systems
+    (torque-controlled arms), where a single-frame position latent is
+    velocity-blind and control is unidentifiable. Mirrors the VAE encoder
+    trunk so both bootstraps share an architecture."""
     latent_dim: int = 4
     ch: int = 32
     img_size: int = 28
+    n_frames: int = 1
 
     @nn.compact
     def __call__(self, x):
         c = self.ch
-        x = x[:, :, :, None] * 2.0 - 1.0                  # (B, S, S, 1), centered
+        if x.ndim == 3:                                   # (B, S, S) → (B, 1, S, S)
+            x = x[:, None, :, :]
+        x = jnp.transpose(x, (0, 2, 3, 1)) * 2.0 - 1.0    # (B, S, S, K), centered
         x = nn.relu(nn.Conv(c,     (4, 4), strides=2, padding="SAME")(x))   # S/2
         x = nn.relu(nn.Conv(c * 2, (4, 4), strides=2, padding="SAME")(x))   # S/4
         if self.img_size == 64:
@@ -67,6 +74,7 @@ def train_jepa(
     latent_dim: int = 4,
     ch: int = 32,
     img_size: int = 28,
+    n_frames: int = 1,
     iterations: int = 400,
     batch_size: int = 256,
     lr: float = 1e-3,
@@ -82,36 +90,47 @@ def train_jepa(
     the throwaway predictor includes a `B·u` term so control-driven motion is
     not forced into the representation as state.
 
+    `n_frames=K>1` encodes K-frame windows (stacked channels) so the latent
+    captures velocity — needed for second-order (torque-controlled) systems.
+    A prediction step then relates window ending at t to the window ending at
+    t+1 under the control applied at t.
+
     Returns `(model, params)`. The internal predictor `(A, B, c)` is discarded;
     only the encoder params are kept — the deployed dynamics are learned by
     conjugate VMP downstream.
     """
     seqs = [np.asarray(s, dtype=np.float32) for s in frame_seqs]
-    S = img_size
-    flat = np.concatenate(seqs, axis=0)
-    # consecutive (t, t+1) index pairs that stay within one trajectory
-    idx0, idx1, ui = [], [], []
-    controls = None
-    if control_seqs is not None:
-        controls = np.concatenate([np.asarray(c, dtype=np.float32) for c in control_seqs], axis=0)
-    off, coff = 0, 0
+    S, K = img_size, n_frames
+    control_arrs = ([np.asarray(c, dtype=np.float32) for c in control_seqs]
+                    if control_seqs is not None else None)
+    du = control_arrs[0].shape[1] if control_arrs else 0
+
+    # Build K-frame windows per trajectory and consecutive (window_t, window_{t+1})
+    # pairs; the control on that transition is the one applied at the window's
+    # last frame (controls[i + K - 1]).
+    win_list, w0, w1, uu = [], [], [], []
+    off = 0
     for k, s in enumerate(seqs):
         T = s.shape[0]
-        for t in range(T - 1):
-            idx0.append(off + t); idx1.append(off + t + 1)
-            ui.append(coff + t)
-        off += T
-        coff += (T - 1)
-    idx0 = np.asarray(idx0); idx1 = np.asarray(idx1); ui = np.asarray(ui)
-    du = controls.shape[1] if controls is not None else 0
+        if T < K + 1:
+            continue
+        wins = np.stack([s[t:t + K] for t in range(T - K + 1)])   # (T-K+1, K, S, S)
+        nb = wins.shape[0]
+        for i in range(nb - 1):
+            w0.append(off + i); w1.append(off + i + 1)
+            uu.append(control_arrs[k][i + K - 1] if du else np.zeros(0, np.float32))
+        win_list.append(wins if K > 1 else wins[:, 0])
+        off += nb
+    windows = jnp.asarray(np.concatenate(win_list, axis=0))
+    w0 = np.asarray(w0); w1 = np.asarray(w1)
+    ctrl = jnp.asarray(np.stack(uu)) if du else None
 
-    frames = jnp.asarray(flat)
-    ctrl = jnp.asarray(controls) if controls is not None else None
-    enc = JEPAEncoder(latent_dim=latent_dim, ch=ch, img_size=img_size)
+    enc = JEPAEncoder(latent_dim=latent_dim, ch=ch, img_size=img_size, n_frames=K)
     rng = jax.random.PRNGKey(seed)
     rng, ir = jax.random.split(rng)
+    init_in = jnp.ones((1, S, S)) if K == 1 else jnp.ones((1, K, S, S))
     params = {
-        "enc": enc.init(ir, jnp.ones((1, S, S))),
+        "enc": enc.init(ir, init_in),
         "A": jnp.eye(latent_dim) * 0.9,
         "B": jnp.zeros((latent_dim, du)) if du else jnp.zeros((latent_dim, 0)),
         "c": jnp.zeros(latent_dim),
@@ -136,14 +155,13 @@ def train_jepa(
         upd, opt = tx.update(g, opt, p)
         return optax.apply_updates(p, upd), opt, l
 
-    n = len(idx0)
+    n = len(w0)
     pbar = tqdm(range(iterations), desc="JEPA", disable=not verbose)
     for it in pbar:
         rng, sr = jax.random.split(rng)
-        sel = jax.random.choice(sr, n, (min(batch_size, n),), replace=False)
-        sel = np.asarray(sel)
-        f0, f1 = frames[idx0[sel]], frames[idx1[sel]]
-        u = ctrl[ui[sel]] if du else jnp.zeros((len(sel), 0))
+        sel = np.asarray(jax.random.choice(sr, n, (min(batch_size, n),), replace=False))
+        f0, f1 = windows[w0[sel]], windows[w1[sel]]
+        u = ctrl[sel] if du else jnp.zeros((len(sel), 0))
         params, opt, l = step(params, opt, f0, f1, u)
         if verbose:
             pbar.set_postfix(loss=f"{float(l):.4f}")
@@ -160,6 +178,8 @@ def save_encoder(params, path: str | Path):
 
 
 def load_encoder(model: JEPAEncoder, path: str | Path) -> dict:
-    template = model.init(jax.random.PRNGKey(0), jnp.ones((1, model.img_size, model.img_size)))
+    S, K = model.img_size, getattr(model, "n_frames", 1)
+    init_in = jnp.ones((1, S, S)) if K == 1 else jnp.ones((1, K, S, S))
+    template = model.init(jax.random.PRNGKey(0), init_in)
     with open(str(path), "rb") as f:
         return serialization.from_bytes(template, f.read())
