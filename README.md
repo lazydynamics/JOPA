@@ -68,51 +68,43 @@ of the chain.
 
 ```python
 model = JointModel([
-    Block("z", LearnedLinear(dim=4, du=1, offset=True), observe=encoder),
+    Block("z", LearnedLinear(dim=6, du=2), observe=encoder),
 ])
+model.learn(warmup)                          # conjugate system identification
 
+agent = Agent(model, horizon=6, forget=0.5)  # filter -> plan -> act -> learn
+agent.goal(goal_observation)                 # goals are observations too
 while True:
-    obs     = sense()
-    if learning_on:
-        model.learn([recent_chunk])          # E-step (VMP) + optional M-step
-        model.remember(forget=0.5)           # posterior becomes tomorrow's prior
-    actions = model.plan(obs_horizon)        # VMP on the action sequence
-    act(actions[0])
+    u = agent.step(sense())                  # one message-passing cycle
+    act(u)
 ```
 
-## Continual learning: a world model that never stops learning
+Each `step` is inference on the same graph: the transition message predicts the
+belief, the observation message updates it, the exact action posterior is read
+off a single forward-backward sweep, and — when the model is surprised and the
+data is informative — the dynamics posterior is refreshed by conjugate VMP.
+
+## The cycle: an agent that teaches itself to see and act
 
 <p align="center">
-  <img src="docs/boat.gif" width="92%" alt="Boat on shifting currents: the adaptive world model tracks regime changes online while a frozen twin gets blown off its goals" />
+  <img src="docs/reacher_cycle.gif" width="72%" alt="Three reaching tasks: the agent at episode 0 flails; the same agent at episode 38, trained only on its own experience, approaches gently" />
 </p>
 
-Because every belief is a conjugate posterior, *online adaptation is just more
-inference* — no gradient fine-tuning of the dynamics, no replay buffer.
-[`boat.py`](examples/boat.py) streams an image-only agent through a world whose
-physics change mid-run: a current switches on, then veers. Each part of the
-posterior is treated according to what it is: the kinematic structure `A` is
-pinned by its prior, thrust `B` accumulates evidence forever, the noise
-calibration `W` is learned offline and held, and the current `c` — the volatile
-bit — carries a random-walk prior, so its posterior diffuses a little every
-chunk and fresh evidence can always re-aim it.
+[`reacher.py`](examples/reacher.py) drops an agent into MuJoCo Reacher with
+**nothing learned in advance** — no pretrained encoder, no dynamics. It babbles
+(episode zero), then lives the plan-act-observe-learn cycle: the VAE encoder
+turns 128px frames into heteroscedastic messages (the sensor reports its own
+confidence), every torque is the exact Gaussian action posterior, and both the
+dynamics posterior and the sensor are refined from the agent's own replay.
 
 <p align="center">
-  <img src="docs/boat_adapt.png" width="80%" alt="Surprise spikes at the hidden regime changes; the current posterior re-aims with honest credible bands; the adaptive agent outperforms the frozen twin" />
+  <img src="docs/reacher_curves.png" width="80%" alt="Learning curves: settled error trends down, arrival speed falls from ballistic to gentle, sensor position and velocity R2 climb" />
 </p>
 
-One-step predictive surprise spikes exactly at the hidden changes (top), the
-posterior over the current re-aims within a few chunks with honest ±2σ bands
-(middle), and the adaptive agent holds its goals where a frozen world model —
-the standard "train offline, deploy frozen" regime — is blown off course
-(bottom).
-
-And the agent loop itself, slowed down around the first regime change —
-**plan** (VMP on the action sequence) · **act** (thrust + exploration dither) ·
-**adapt** (absorb the chunk, `remember`, diffuse the drift):
-
-<p align="center">
-  <img src="docs/boat_loop.gif" width="88%" alt="The plan-act-adapt loop slowed down: planned trajectory, applied thrust, and the current posterior re-aiming as chunks are absorbed" />
-</p>
+Over ~38 episodes the agent learns to *see* (sensor velocity R2 0 -> ~0.85), to
+*arrive gently* (25-38 rad/s flythroughs -> 2-15 rad/s), and — where it practices
+— to *hold*. Everything in the loop is a message; the only gradients are the
+sensor distilling what the smoother already inferred.
 
 ## Building blocks
 
@@ -127,7 +119,8 @@ And the agent loop itself, slowed down around the first regime change —
 | `Frozen(encode, decode)` | Fixed encoder + optional renderer |
 | `LearnedVAE` | VAE encoder emits messages; weights refined in the M-step |
 | `LinearCoupling` | Cross-block Gaussian factor — multimodal fusion |
-| `JointModel.{learn, smooth, filter, plan}` | The four queries, as methods |
+| `JointModel.{learn, smooth, filter, plan}` | The four queries, as methods; `plan(method="exact")` returns the exact Gaussian action posterior in one sweep (LQG duality) |
+| `Agent(model, horizon, forget, ...)` | The closed loop: filter -> plan -> act -> learn, with surprise/excitation-gated relearning |
 
 ## A minimal example
 
@@ -146,7 +139,7 @@ block = Block("z", LearnedLinear(dim=2, du=1, n_iterations=40), observe=encode)
 model = JointModel([block])
 
 model.learn(trajectories)               # [{"z": [x_0, x_1, …], "control": [u_0, …]}, …]
-actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
+actions = model.plan({"z": [start, None, ..., goal]})   # exact posterior, one sweep
 ```
 
 ## Examples
@@ -157,7 +150,7 @@ actions = model.plan({"z": [start, None, ..., goal]}, n_iterations=300)
 | [`controlled_digits.py`](examples/controlled_digits.py) | Add a control input; learn `B`, predict under action regimes | |
 | [`end_to_end_digits.py`](examples/end_to_end_digits.py) | Variational EM — refine the VAE encoder alongside the dynamics | |
 | [`pendulum.py`](examples/pendulum.py) | Image-only VAE + Variational EM + image-goal control — set a target frame, reach it by control | |
-| [`boat.py`](examples/boat.py) | **Continual learning from pixels** — the current changes mid-stream; the posterior notices, re-aims, and control recovers, all by conjugate updates | <img src="docs/boat_adapt.png" width="110" alt="Online adaptation money plot"/> |
+| [`reacher.py`](examples/reacher.py) | **The cycle** — a MuJoCo agent born with nothing learns to see and act from its own experience: in-loop VAE sensor, exact planning, conjugate continual learning | <img src="docs/reacher_curves.png" width="110" alt="Cycle learning curves"/> |
 
 ## Checkpoint validation
 
@@ -185,7 +178,7 @@ same quality signal.
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
 uv pip install -e ".[viz,test]"
-uv run python examples/boat.py
+uv run python examples/reacher.py --throttle --episodes 12
 uv run pytest                                 # semantic tests
 ```
 
@@ -195,9 +188,14 @@ uv run pytest                                 # semantic tests
   planning are each `q(·)` on a different subset of the same graph — no reward
   shaping, policy networks, or replay buffers.
 * **Linear-Gaussian latent dynamics**, either assumed (`LearnedLinear` in latent
-  space) or from a per-step local linearization (`KnownPhysics`). The VAE
-  pre-training — autoencoding the observations — is the one non-message-passing
-  bootstrap; the M-step then refines the encoder under the inferred dynamics.
+  space) or from a per-step local linearization (`KnownPhysics`). The encoder is
+  the one gradient-trained component — and it can be learned entirely inside the
+  agent loop from the agent's own experience (`examples/reacher.py`), no
+  pretraining ritual required.
+* **Planning is exact inference.** Under the linear-Gaussian graph the joint over
+  states and actions is Gaussian, so the action posterior is one forward-backward
+  sweep in information form — the smoothing recursion *is* the optimal controller
+  (LQG duality). The iterative VMP planner remains as `plan(method="vmp")`.
 * **Composability.** Adding a modality is appending a `Block`; information flows
   across slices through `LinearCoupling`. The `JointModel` knows only blocks and
   messages — not images, proprioception, or actions.
