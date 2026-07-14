@@ -52,11 +52,13 @@ class _Encoder(nn.Module):
         if x.ndim == 3:
             x = x[:, None, :, :]
         x = jnp.transpose(x, (0, 2, 3, 1))                # (B, S, S, K)
-        if self.img_size == 64:
+        if self.img_size >= 64:
             x = 2.0 * x - 1.0                             # center: keeps the deeper
         x = nn.relu(nn.Conv(c,     (4, 4), strides=2, padding="SAME")(x))   # S/2  stack from starving
         x = nn.relu(nn.Conv(c * 2, (4, 4), strides=2, padding="SAME")(x))   # S/4
-        if self.img_size == 64:                           # 16×16 → 8×8
+        if self.img_size >= 64:                           # → 8×8
+            x = nn.relu(nn.Conv(c * 2, (4, 4), strides=2, padding="SAME")(x))
+        if self.img_size == 128:
             x = nn.relu(nn.Conv(c * 2, (4, 4), strides=2, padding="SAME")(x))
         x = x.reshape((x.shape[0], -1))
         x = nn.relu(nn.Dense(256)(x))
@@ -84,7 +86,9 @@ class _Decoder(nn.Module):
         x = nn.relu(nn.Dense(256)(x))
         x = nn.relu(nn.Dense(base * base * c * 2)(x))
         x = x.reshape((-1, base, base, c * 2))
-        if self.img_size == 64:                                                          # 8 → 16
+        if self.img_size >= 64:                                                          # 8 → 16
+            x = nn.relu(nn.ConvTranspose(c * 2, (4, 4), strides=(2, 2), padding="SAME")(x))
+        if self.img_size == 128:                                                         # 16 → 32
             x = nn.relu(nn.ConvTranspose(c * 2, (4, 4), strides=(2, 2), padding="SAME")(x))
         x = nn.relu(nn.ConvTranspose(c, (4, 4), strides=(2, 2), padding="SAME")(x))     # S/2
         x = nn.ConvTranspose(self.n_frames, (4, 4), strides=(2, 2), padding="SAME")(x)  # S×S×K
@@ -93,7 +97,7 @@ class _Decoder(nn.Module):
 
 
 class VAE(nn.Module):
-    """Convolutional VAE for square grayscale frames (`img_size` 28 or 64).
+    """Convolutional VAE for square grayscale frames (`img_size` 28, 64 or 128).
 
     `n_frames=1` (default): single-frame encoder + single-frame decoder.
     `n_frames=K>1`: encoder sees K stacked frames and the decoder reconstructs
@@ -106,8 +110,8 @@ class VAE(nn.Module):
     img_size: int = 28
 
     def setup(self):
-        if self.img_size not in (28, 64):
-            raise ValueError(f"img_size must be 28 or 64, got {self.img_size}")
+        if self.img_size not in (28, 64, 128):
+            raise ValueError(f"img_size must be 28, 64 or 128, got {self.img_size}")
         self.encoder = _Encoder(self.latent_dim, self.ch, self.n_frames, self.img_size)
         self.decoder = _Decoder(self.ch, self.n_frames, self.img_size)
 
