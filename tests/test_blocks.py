@@ -378,3 +378,66 @@ def test_jepa_encoder_message_composes_into_block():
     block = Block("z", LearnedLinear(dim=3, n_iterations=5), observe=obs)
     means, covs = block.transition.learn([[obs.message(f) for f in seqs[0]]])
     assert means.shape[1] == 3            # VMP produced smoothed latent means
+
+
+def test_exact_plan_matches_lq_in_deterministic_limit():
+    """The exact Gaussian action posterior reduces to the LQ solution when the
+    transition is near-deterministic (LQG duality sanity check)."""
+    from jopa.message_passing import infer_actions_exact
+    from jopa.blocks import _identity_meta
+
+    rng = np.random.RandomState(0)
+    d, du, H = 3, 2, 6
+    A = np.eye(d) + 0.1 * rng.randn(d, d)
+    B = 0.5 * rng.randn(d, du)
+    W = 1e6 * np.eye(d)                       # near-deterministic
+    x0 = rng.randn(d)
+    zg = rng.randn(d)
+    reg, pg = 1e-2, 1.0
+
+    q_a = Gaussian(eta=1e9 * jnp.asarray(A.ravel()), lam=1e9 * jnp.eye(d * d))
+    q_W = Wishart(df=1e6, inv_scale=1e6 * jnp.linalg.inv(jnp.asarray(W)))
+    q_b = Gaussian(eta=1e9 * jnp.asarray(B.ravel()), lam=1e9 * jnp.eye(d * du))
+    cache = CTCache(q_a, q_W, _identity_meta(d), q_b)
+
+    prior_x = Gaussian(eta=1e9 * jnp.asarray(x0), lam=1e9 * jnp.eye(d))
+    prior_u = Gaussian(eta=jnp.zeros(du), lam=reg * pg * jnp.eye(du))
+    vague = Gaussian(eta=jnp.zeros(d), lam=jnp.zeros((d, d)))
+    goal = Gaussian(eta=pg * jnp.asarray(zg), lam=pg * jnp.eye(d))
+    acts = np.array(infer_actions_exact(prior_x, [vague] * H + [goal], cache, prior_u))
+
+    # closed-form LQ: minimise |x_H - zg|^2 + reg |u|^2 under x' = A x + B u
+    M = np.zeros((d, du * H))
+    for k in range(H):
+        M[:, du * k:du * k + du] = np.linalg.matrix_power(A, H - 1 - k) @ B
+    b = zg - np.linalg.matrix_power(A, H) @ x0
+    u_lq = np.linalg.solve(M.T @ M + reg * np.eye(du * H), M.T @ b).reshape(H, du)
+    assert np.abs(acts - u_lq).max() < 1e-3
+
+
+def test_plan_method_vmp_still_reaches():
+    """The iterative VMP planner stays available via method='vmp'."""
+    rng = np.random.RandomState(1)
+    A = np.array([[1.0, 0.1], [0.0, 1.0]])
+    B = np.array([[0.0], [0.1]])
+    trajs = []
+    for _ in range(15):
+        x = rng.randn(2) * 0.5
+        seq, us = [x.copy()], []
+        for _ in range(39):
+            u = rng.randn(1)
+            us.append(u)
+            x = A @ x + (B @ u).ravel() + 0.005 * rng.randn(2)
+            seq.append(x.copy())
+        trajs.append({"z": seq, "control": us})
+    block = Block("z", LearnedLinear(dim=2, du=1, n_iterations=40),
+                  observe=lambda d: _msg(d, 1e4))
+    model = JointModel([block])
+    model.learn(trajs)
+    obs = {"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]}
+    for method in ("exact", "vmp"):
+        actions = model.plan(obs, n_iterations=300, method=method)
+        x = np.array([0.0, 0.0])
+        for u in np.array(actions):
+            x = A @ x + (B @ u).ravel()
+        assert abs(x[0] - 1.0) < 0.2, method

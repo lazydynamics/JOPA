@@ -7,6 +7,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from tqdm import tqdm
 
 from .distributions import Gaussian, Wishart, combine_gaussians, gaussian_mean
@@ -14,7 +15,6 @@ from .nodes.transition import (
     ct_forward, ct_backward, ct_marginal_yx,
     ct_message_a, ct_message_b, ct_message_u, ct_message_W,
 )
-
 
 def _stack(msgs):
     return Gaussian(
@@ -167,3 +167,66 @@ def infer_actions(prior_x, obs_msgs, cache, prior_u, n_iterations=50, verbose=Fa
         _, _, m_xs, m_ys = forward_backward(prior_x, obs_msgs, cache, u_means)
         q_us = vupd(m_ys, m_xs, u_means)
     return jax.vmap(gaussian_mean)(q_us)
+
+
+def infer_actions_exact(prior_x, obs_msgs, cache, prior_u):
+    """Planning as inference, exactly — one forward–backward sweep.
+
+    :func:`infer_actions` runs coordinate-ascent VMP with a mean-field cut
+    between the state chain and the actions, which under-disperses on strongly
+    coupled action sequences. Removing the cut makes planning *exact*: group
+    each time slice as ``s[t] = [x[t]; u[t]]`` and the joint is a Gaussian
+    chain, so sum-product — the same α (forward elimination) and β (back
+    substitution) recursions as Kalman smoothing, here in information form —
+    yields the action posterior in ONE sweep. This is LQG duality: the
+    smoothing sweep *is* the optimal controller.
+
+    Runs in float64 at Python level — the belief/goal/transition precision
+    scales span more than float32 resolves; a numerics decision, not style.
+    Uses the posterior-mean transition ``(E[A], E[B], E[W])`` from the cache.
+    (Raw expected-moment corrections are deliberately NOT applied: the
+    ``xᵀ·contraction(Va)·x`` free-energy term is a state-magnitude penalty
+    that drags plans toward the origin — correct for smoothing, pathological
+    as a planning cost on non-centred latents.) Returns the ``(T-1, du)``
+    posterior-mean actions.
+    """
+    d, du = cache.dx, cache.du
+    ds = d + du
+    obs_list = obs_msgs if isinstance(obs_msgs, list) else [
+        Gaussian(eta=obs_msgs.eta[t], lam=obs_msgs.lam[t])
+        for t in range(obs_msgs.eta.shape[0])]
+    T = len(obs_list)
+    f64 = lambda a: np.asarray(a, dtype=np.float64)
+    A, B, W = f64(cache.mA), f64(cache.mB), f64(cache.mW)
+    AtW, BtW = A.T @ W, B.T @ W
+
+    # per-slice information: D[t] (ds×ds) on s[t], coupling C[t] to s[t+1]
+    D = np.zeros((T, ds, ds)); e = np.zeros((T, ds))
+    C = np.zeros((T - 1, ds, ds))
+    for t, ob in enumerate(obs_list):
+        D[t, :d, :d] += f64(ob.lam); e[t, :d] += f64(ob.eta)
+        D[t, d:, d:] += f64(prior_u.lam); e[t, d:] += f64(prior_u.eta)
+    D[0, :d, :d] += f64(prior_x.lam); e[0, :d] += f64(prior_x.eta)
+    for t in range(T - 1):
+        # transition factor: quadratic of  x[t+1] − A x[t] − B u[t]  in W
+        D[t, :d, :d] += AtW @ A
+        D[t, d:, d:] += BtW @ B
+        D[t, :d, d:] += AtW @ B
+        D[t, d:, :d] += (AtW @ B).T
+        D[t + 1, :d, :d] += W
+        C[t, :d, :d] = -AtW          # rows s[t], cols s[t+1] (x-part only)
+        C[t, d:, :d] = -BtW
+
+    # α sweep: forward elimination of the block-tridiagonal information form
+    Dt = D.copy(); et = e.copy()
+    G = np.zeros_like(C)
+    for t in range(T - 1):
+        G[t] = np.linalg.solve(Dt[t], C[t])
+        Dt[t + 1] -= C[t].T @ G[t]
+        et[t + 1] -= C[t].T @ np.linalg.solve(Dt[t], et[t])
+    # β sweep: back substitution → posterior means of every slice
+    mu = np.zeros((T, ds))
+    mu[T - 1] = np.linalg.solve(Dt[T - 1], et[T - 1])
+    for t in range(T - 2, -1, -1):
+        mu[t] = np.linalg.solve(Dt[t], et[t] - C[t] @ mu[t + 1])
+    return jnp.asarray(mu[:-1, d:])              # u[0 .. T-2]

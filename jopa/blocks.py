@@ -28,6 +28,7 @@ from .defaults import PRIOR_A_COV, PRIOR_B_COV, PRIOR_W_DF, INIT_A_COV, INIT_B_C
 from .nodes.transition import CTMeta, CTCache, ct_forward
 from .message_passing import (
     forward_backward, accumulate_vmp_messages, compute_marginals, infer_actions,
+    infer_actions_exact,
 )
 from .nn.vae import LOG_STD_CLIP, PROB_CLIP, _as_batch, _latest_frame
 
@@ -154,7 +155,9 @@ class LearnedJEPA(Observation):
         self.params = params
         self.img_size = getattr(model, "img_size", 28)
         self.n_frames = getattr(model, "n_frames", 1)
-        self.obs_prec = float(obs_prec)
+        # scalar (uniform confidence) or per-dimension vector — e.g. trust the
+        # position channels and distrust the velocity channels of the latent.
+        self.obs_prec = jnp.asarray(obs_prec, dtype=jnp.float32)
         self._lam = None
 
     def _encode(self, image):
@@ -165,7 +168,7 @@ class LearnedJEPA(Observation):
     def message(self, image) -> Gaussian:
         mu = self._encode(image)
         if self._lam is None:
-            self._lam = self.obs_prec * jnp.eye(mu.shape[0])
+            self._lam = jnp.diag(jnp.broadcast_to(self.obs_prec, (mu.shape[0],)))
         return Gaussian(eta=self._lam @ mu, lam=self._lam)
 
 
@@ -683,12 +686,18 @@ class JointModel:
             raise NotImplementedError("plan: multi-controllable planning requires coupling resolution")
         return ctrl[0]
 
-    def plan(self, observations, n_iterations=50, prior_x=None, prior_u=None):
-        """Infer the action sequence via VMP on `u`. `observations[block]` is
-        a length-T list of raw observations or `None` (vague). `prior_x` is
+    def plan(self, observations, n_iterations=50, prior_x=None, prior_u=None,
+             method="exact"):
+        """Infer the action sequence — planning as inference. `observations[block]`
+        is a length-T list of raw observations or `None` (vague). `prior_x` is
         the carried belief (defaults to N(0, I)). `prior_u` defaults to a
         start→goal-shift prior for learned dynamics; supply explicitly for
         KnownPhysics / setpoint regulation.
+
+        ``method="exact"`` (default) computes the exact Gaussian action
+        posterior in one solve (LQG duality) — no iteration, no mean-field.
+        ``method="vmp"`` uses the iterative coordinate-ascent VMP updates
+        (`n_iterations` applies only there).
 
         Returns the planned actions of shape `(T-1, du)`.
         """
@@ -704,6 +713,11 @@ class JointModel:
         else:
             start_mean = gaussian_mean(prior_x)
 
+        def _solve(cache, pu):
+            if method == "exact":
+                return infer_actions_exact(prior_x, msgs, cache, pu)
+            return infer_actions(prior_x, msgs, cache, pu, n_iterations=n_iterations)
+
         if tr.learned:
             if tr.q_b is None and prior_u is None:
                 raise ValueError(
@@ -715,20 +729,15 @@ class JointModel:
                 prior_u = _default_action_prior(d, du, tr.q_b, raw, msgs, start_mean,
                                                 eff_du=tr.eff_du)
             if tr.offset:                     # pin the learned-drift channel to 1
-                u_aug = infer_actions(prior_x, msgs, cache,
-                                      _augment_prior_u(prior_u, tr.eff_du),
-                                      n_iterations=n_iterations)
-                return u_aug[:, :du]
-            return infer_actions(prior_x, msgs, cache, prior_u, n_iterations=n_iterations)
+                return _solve(cache, _augment_prior_u(prior_u, tr.eff_du))[:, :du]
+            return _solve(cache, prior_u)
 
         # KnownPhysics: re-linearize at current belief, fold offset into a
         # pinned-1 control channel.
         cache, eff_du = _known_plan_cache(tr, prior_x)
         if prior_u is None:
             prior_u = Gaussian(eta=jnp.zeros(du), lam=jnp.eye(du) * 1e-2)
-        u_aug = infer_actions(prior_x, msgs, cache, _augment_prior_u(prior_u, eff_du),
-                              n_iterations=n_iterations)
-        return u_aug[:, :du]
+        return _solve(cache, _augment_prior_u(prior_u, eff_du))[:, :du]
 
     # ---- smoothing & filtering --------------------------------------------
 

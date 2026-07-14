@@ -10,8 +10,10 @@ from .blocks import (
     LearnedLinear, LearnedAffine, KnownPhysics,
     LinearCoupling,
 )
+from .agent import Agent
 
 __all__ = [
+    "Agent",
     "Gaussian", "Wishart",
     "combine_gaussians", "gaussian_mean", "gaussian_mean_cov",
     "gaussian_prior", "gaussian_logpdf", "near_identity_prior",
