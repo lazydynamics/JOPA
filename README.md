@@ -311,13 +311,19 @@ actions = model.plan({"z": [start, None, None, goal]})   # exact posterior, one 
 
 | script | what it shows |
 |---|---|
-| [`examples/reacher/`](examples/reacher) | pixel-and-action-only MuJoCo Reacher: `run.py` (train/validate/evaluate), `runtime.py` (the closed loop), `validation.py` (pixel-only diagnostics), `collect.py` |
+| [`examples/reacher/`](examples/reacher) | pixel-and-action-only MuJoCo Reacher: `run.py` (CLI), `runtime.py` (the closed loop), `spec.py` (frame and latent geometry), `artifacts.py`, `train.py`, `diagnose.py`, `evaluate.py`, `metrics.py`, `collect.py` |
 | [`digits_rotating.py`](examples/digits_rotating.py) | latent linear dynamics behind a frozen VAE; the smoothing sweep extrapolating |
 | [`digits_controlled.py`](examples/digits_controlled.py) | add controls, learn `B`, predict under action regimes |
 | [`digits_end_to_end.py`](examples/digits_end_to_end.py) | variational EM — dynamics and VAE weights learned together |
 | [`pendulum.py`](examples/pendulum.py) | image-goal control on a classic plant |
-| [`figures/hero.py`](figures/hero.py) | regenerates the animation and model figure at the top of this page |
-| [`figures/planning.py`](figures/planning.py) | regenerates the closed-loop planning animation |
+| [`figures/hero.py`](figures/hero.py) | regenerates `assets/hero.gif` |
+| [`figures/planning.py`](figures/planning.py) | regenerates `assets/planning.gif` |
+| [`figures/convergence.py`](figures/convergence.py) | regenerates `assets/goal_convergence.png` |
+
+Every image on this page is produced by a command in this repo, except
+`assets/model.png`, which is a hand-drawn diagram. `assets/reacher_pixels.gif`
+comes out of `evaluate` itself — running it without `--no-video` writes one clip
+per pose beside the traces.
 
 ## Checkpoint validation
 

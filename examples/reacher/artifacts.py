@@ -11,22 +11,7 @@ import numpy as np
 from jopa import Gaussian, LearnedLinear
 from jopa.nn.vae import PoseMotionVAE
 
-from .runtime import (
-    ACTION_PRECISION_HOLD,
-    ACTION_PRECISION_TRAVEL,
-    ACTION_PRIOR_POWER,
-    ACTION_PRIOR_SCALE,
-    IMG_SIZE,
-    MOTION_DIM,
-    MOTION_GOAL_PRECISION,
-    MOTION_HIDDEN_DIM,
-    N_FRAMES,
-    NEIGHBORS,
-    POSE_DIM,
-    POSE_GOAL_PRECISION,
-    REFIT_OBS_PRECISION,
-    SUBGOAL_TRUST,
-)
+from .spec import REACHER, REFIT_OBS_PRECISION
 
 REPLAY_PATTERN = "ck_*.pkl"
 PREDICTION_WEIGHT = 10.0
@@ -211,12 +196,12 @@ def paths(args):
 
 def sensor_for(args):
     return PoseMotionVAE(
-        pose_dim=POSE_DIM,
-        motion_dim=MOTION_DIM,
+        pose_dim=REACHER.pose_dim,
+        motion_dim=REACHER.motion_dim,
         ch=args.channels,
-        n_frames=N_FRAMES,
-        img_size=IMG_SIZE,
-        motion_hidden_dim=MOTION_HIDDEN_DIM,
+        n_frames=REACHER.n_frames,
+        img_size=REACHER.img_size,
+        motion_hidden_dim=REACHER.motion_hidden_dim,
     )
 
 
@@ -278,18 +263,18 @@ def load_pixel_action_replay(args, names=None):
                 continue
             if len(frames) != len(controls) + 1:
                 continue
-            if len(frames) < N_FRAMES + args.rollout:
+            if len(frames) < REACHER.n_frames + args.rollout:
                 continue
-            if frames.shape[-2:] != (IMG_SIZE, IMG_SIZE):
+            if frames.shape[-2:] != (REACHER.img_size, REACHER.img_size):
                 old_height, old_width = frames.shape[-2:]
-                if old_height != old_width or old_height % IMG_SIZE:
+                if old_height != old_width or old_height % REACHER.img_size:
                     raise ValueError(
                         f"cannot downsample {frames.shape[-2:]} "
-                        f"to {(IMG_SIZE, IMG_SIZE)}")
-                scale = old_height // IMG_SIZE
+                        f"to {(REACHER.img_size, REACHER.img_size)}")
+                scale = old_height // REACHER.img_size
                 frames = frames.reshape(
-                    len(frames), IMG_SIZE, scale,
-                    IMG_SIZE, scale).mean((2, 4))
+                    len(frames), REACHER.img_size, scale,
+                    REACHER.img_size, scale).mean((2, 4))
             frames = frames.astype(np.float32)
             if frames.max(initial=0.0) > 1.0:
                 frames /= 255.0
@@ -415,7 +400,7 @@ def gaussian_sequence(item, offsets):
 
 
 def fit_conjugate_dynamics(encoded, offsets):
-    dimension = POSE_DIM + MOTION_DIM
+    dimension = REACHER.dim
     transition = LearnedLinear(
         dimension, du=2, offset=True,
         n_iterations=VMP_ITERATIONS,
@@ -450,7 +435,7 @@ def training_configuration(args):
     }
 
 
-def base_manifest(args, split, provenance):
+def base_manifest(args, split, provenance, policy):
     return {
         "schema": MANIFEST_SCHEMA,
         "phase": "initializing",
@@ -476,20 +461,7 @@ def base_manifest(args, split, provenance):
                 "from frozen pixel-latent replay"),
             "planner": "infer_actions_exact",
             "amended_planning": {
-                "pose_goal_precision": float(POSE_GOAL_PRECISION),
-                "motion_goal_precision": float(MOTION_GOAL_PRECISION),
-                "action_precision": float(ACTION_PRECISION),
-                "action_prior": {
-                    "kind": "conditional flat-top on latent goal distance",
-                    "travel_precision": float(ACTION_PRECISION_TRAVEL),
-                    "hold_precision": float(ACTION_PRECISION_HOLD),
-                    "scale": float(ACTION_PRIOR_SCALE),
-                    "power": float(ACTION_PRIOR_POWER),
-                },
-                "subgoal": "latent trust region",
-                "subgoal_trust": float(SUBGOAL_TRUST),
-                "localize_neighbors": int(NEIGHBORS),
-                "refit_obs_prec": float(REFIT_OBS_PRECISION),
+                **policy,
                 "rollout_gate_localized": True,
                 "rationale": (
                     "oracle diagnostics showed a single global linear model "

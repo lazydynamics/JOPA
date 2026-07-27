@@ -1,46 +1,22 @@
 """Closed-loop evaluation: poses from consecutive seeds, centimetre scoring."""
 from __future__ import annotations
 
-import copy
 import json
-import pickle
 import time
 
 import numpy as np
 
-from jopa import Agent, Block, JointModel, PoseMotionObservation
 from jopa.distributions import gaussian_mean
-from jopa.nn.vae import load_params
 
 from .artifacts import (
-    ManifestError,
     architecture_for,
-    attach_encoded_replay,
+    load_manifest,
     paths,
-    sensor_for,
     update_runtime,
     validate_manifest,
     write_json,
 )
-from .runtime import (
-    ACTION_REPEAT,
-    CAMERA_DISTANCE,
-    EVAL_STEPS,
-    GOAL_EIGENVALUE_FLOOR,
-    HORIZON,
-    IMG_SIZE,
-    JOINT2_GOAL_LIMIT,
-    JOINT2_START_LIMIT,
-    MIN_TASK_SEPARATION,
-    MOTION_DIM,
-    MOTION_GOAL_PRECISION,
-    N_FRAMES,
-    NEIGHBORS,
-    POSE_DIM,
-    POSE_GOAL_PRECISION,
-    action_precision,
-    latent_subgoal,
-)
+from .runtime import EVAL_STEPS, N_FRAMES, ReacherLoop
 
 # A hold counts when the mean fingertip error over the final 20 steps is under
 # 3 cm; a pose is settled when it stays there for 95% of the final 60.
@@ -50,6 +26,7 @@ REACH_THRESHOLD_CM = 1.0
 SETTLED_WINDOW = 60
 SETTLED_FRACTION = 0.95
 SURVEY_POSES = 20
+CLIP_FPS = 25
 DEFAULT_POSE_SEED = 515151
 MONTAGE_FPS = 25
 
@@ -79,10 +56,13 @@ def terminal_metrics(errors, window, threshold):
 
 
 def run_evaluate(args):
+    """Closed-loop evaluation. Drives `ReacherLoop`, which is the single place
+    the simulator, the frozen artifacts and the agent settings are defined —
+    so evaluation and the figure scripts cannot diverge."""
     started = time.time()
     artifact = paths(args)
-    manifest = validate_manifest(
-        artifact["manifest"],
+    validate_manifest(
+        load_manifest(artifact["manifest"]),
         expected_architecture=architecture_for(args),
         checkpoint_paths={
             "sensor": artifact["sensor"],
@@ -90,158 +70,35 @@ def run_evaluate(args):
             "background": artifact["background"],
         },
     )
+    loop = ReacherLoop(artifact["out"], record=not args.no_video)
 
-    # Simulator packages and coordinates are confined below this line.
-    import gymnasium as gym
-    import mujoco
-
-    sensor = sensor_for(args)
-    sensor_params = load_params(sensor, artifact["sensor"])
-    observation = PoseMotionObservation(
-        sensor, sensor_params,
-        log_std_offsets=manifest["calibration"]["log_std_offsets"])
-    with artifact["dynamics"].open("rb") as handle:
-        frozen_transition = pickle.load(handle)
-    cache_record = manifest.get("encoding_caches", {}).get("train")
-    if cache_record is None:
-        raise ManifestError(
-            "train encoding cache is required for local conjugate refits")
-    archive = np.load(cache_record["path"], allow_pickle=False)
-    cache_metadata = json.loads(str(archive["metadata"]))
-    attach_encoded_replay(
-        frozen_transition,
-        [{"means": np.asarray(archive[f"means_{i:05d}"]),
-          "controls": np.asarray(archive[f"controls_{i:05d}"])}
-         for i in range(cache_metadata["trajectories"])],
-        NEIGHBORS)
-    background = np.load(artifact["background"], allow_pickle=False)
-    dimension = POSE_DIM + MOTION_DIM
-
-    environment = gym.make("Reacher-v5", render_mode="rgb_array")
-    unwrapped = environment.unwrapped
-    world, data = unwrapped.model, unwrapped.data
-    fingertip_id = world.geom("fingertip").id
-    target_id = world.geom("target").id
-    # Render at twice the sensor resolution and reduce with the same 2x2 block
-    # mean the training replay went through. Rendering natively at img_size
-    # antialiases differently, which shifts the goal latent by a fraction of a
-    # pixel — a measurable fraction of a 3 cm budget at 0.43 cm/pixel.
-    render_size = 2 * IMG_SIZE
-    renderer = mujoco.Renderer(world, render_size, render_size)
-    camera = mujoco.MjvCamera()
-    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-    camera.lookat[:] = [0, 0, 0]
-    camera.distance = CAMERA_DISTANCE
-    camera.elevation = -90
-    camera.azimuth = 90
-    target_rgba = world.geom_rgba[target_id].copy()
-
-    def render_rgb(show_target=False):
-        world.geom_rgba[target_id] = (
-            target_rgba if show_target
-            else target_rgba
-            * np.array([1, 1, 1, 0], dtype=np.float32))
-        renderer.update_scene(data, camera=camera)
-        image = renderer.render().copy()
-        world.geom_rgba[target_id] = target_rgba
-        return image
-
-    def sensor_frame():
-        gray = render_rgb(show_target=False).mean(2).astype(np.float32)
-        return gray.reshape(
-            IMG_SIZE, 2, IMG_SIZE, 2).mean((1, 3)) / 255.0
-
-    def reset(pose, target_xy):
-        mujoco.mj_resetData(world, data)
-        data.qpos[:2] = pose
-        data.qpos[2:4] = target_xy
-        data.qvel[:] = 0
-        mujoco.mj_forward(world, data)
-
-    def fingertip():
-        return data.geom_xpos[fingertip_id][:2].copy()
-
-    def fingertip_of(pose):
-        saved_position = data.qpos.copy()
-        saved_velocity = data.qvel.copy()
-        data.qpos[:2] = pose
-        data.qvel[:] = 0
-        mujoco.mj_forward(world, data)
-        result = fingertip()
-        data.qpos[:] = saved_position
-        data.qvel[:] = saved_velocity
-        mujoco.mj_forward(world, data)
-        return result
-
-    def act(control):
-        data.ctrl[:] = np.clip(control, -1, 1)
-        for _ in range(ACTION_REPEAT):
-            mujoco.mj_step(world, data)
-
-    def sample_task(seed):
-        rng = np.random.RandomState(seed)
-        for _ in range(100):
-            start_pose = rng.uniform(-np.pi, np.pi, 2)
-            goal_pose = rng.uniform(-np.pi, np.pi, 2)
-            start_pose[1] *= JOINT2_START_LIMIT / np.pi
-            goal_pose[1] *= JOINT2_GOAL_LIMIT / np.pi
-            if np.linalg.norm(
-                    fingertip_of(start_pose)
-                    - fingertip_of(goal_pose)) > MIN_TASK_SEPARATION:
-                return start_pose, goal_pose
-        raise RuntimeError("could not construct a separated reachable task")
-
-    def run_pose(label, phase, pose_index, start_pose, goal_pose,
-                 pose_seed=None):
-        transition = copy.deepcopy(frozen_transition)
-        local_model = JointModel([
-            Block("z", transition, observe=observation)])
-        goal_xy = fingertip_of(goal_pose)
-        reset(goal_pose, goal_xy)
-        goal_frame = sensor_frame()
-        precision = observation.goal_precision(
-            goal_frame, background=background,
-            pose_mean_precision=POSE_GOAL_PRECISION,
-            motion_precision=MOTION_GOAL_PRECISION,
-            eigenvalue_floor=GOAL_EIGENVALUE_FLOOR)
-        agent = Agent(
-            local_model, horizon=HORIZON,
-            action_precision=action_precision,
-            goal_precision=precision,
-            goal_schedule="stage",
-            subgoal=latent_subgoal,
-            relin_surprise=1e9,
-            relin_radius=0.25,
-            adapt_hold=False,
-            track_uncertainty=True)
-        agent.goal(goal_frame)
-        goal_latent = np.asarray(observation.encode(goal_frame)[0])
-        reset(start_pose, goal_xy)
-        history = [sensor_frame()] * N_FRAMES
+    def run_pose(label, pose_index, start_pose, goal_pose, pose_seed=None):
+        goal_xy = loop.fingertip_of(goal_pose)
+        loop.reset(goal_pose, goal_xy)
+        goal_frame = loop.sensor_frame()
+        agent = loop.agent_for(goal_frame, track_uncertainty=True)
+        goal_latent = np.asarray(loop.observation.encode(goal_frame)[0])
+        loop.reset(start_pose, goal_xy)
+        history = [loop.sensor_frame()] * N_FRAMES
         trace = {
             "error_cm": [], "latent_error": [], "control_norm": [],
-            "observation_std": [], "belief_std": [],
-            "action_std": [], "B_std": [], "surprise": [],
-            "drift_norm": [], "drift_std": [],
+            "observation_std": [], "belief_std": [], "action_std": [],
+            "B_std": [], "surprise": [], "drift_norm": [], "drift_std": [],
         }
         video = []
         for _ in range(EVAL_STEPS):
             control = agent.step(np.stack(history[-N_FRAMES:]))
-            act(control)
-            history.append(sensor_frame())
+            loop.act(control)
+            history.append(loop.sensor_frame())
             trace["error_cm"].append(float(
-                np.linalg.norm(fingertip() - goal_xy) * 100.0))
-            trace["latent_error"].append(float(
-                np.linalg.norm(
-                    np.asarray(gaussian_mean(agent.belief))
-                    - goal_latent) / np.sqrt(dimension)))
+                np.linalg.norm(loop.fingertip() - goal_xy) * 100.0))
+            trace["latent_error"].append(float(np.linalg.norm(
+                np.asarray(gaussian_mean(agent.belief)) - goal_latent)))
             trace["control_norm"].append(float(np.linalg.norm(control)))
             trace["observation_std"].append(float(np.sqrt(
-                np.trace(np.asarray(agent.last_observation_cov))
-                / dimension)))
+                np.trace(np.asarray(agent.last_observation_cov)))))
             trace["belief_std"].append(float(np.sqrt(
-                np.trace(np.asarray(agent.last_belief_cov))
-                / dimension)))
+                np.trace(np.asarray(agent.last_belief_cov)))))
             trace["action_std"].append(float(np.sqrt(
                 np.trace(np.asarray(agent.last_action_cov)) / 2.0)))
             trace["B_std"].append(float(np.mean(
@@ -252,43 +109,36 @@ def run_evaluate(args):
                 trace["drift_norm"].append(float(np.linalg.norm(drift)))
                 trace["drift_std"].append(float(np.mean(drift_std)))
             if not args.no_video:
-                video.append(render_rgb(show_target=True))
-        trace = {
-            name: np.asarray(values)
-            for name, values in trace.items()
-        }
+                video.append(loop.display_frame())
+        trace = {name: np.asarray(values) for name, values in trace.items()}
         metrics = terminal_metrics(
             trace["error_cm"], HOLD_WINDOW, HOLD_THRESHOLD_CM)
         errors = trace["error_cm"]
-        settled_width = min(SETTLED_WINDOW, len(errors))
-        tail = errors[-settled_width:]
+        tail_width = min(SETTLED_WINDOW, len(errors))
         metrics.update({
-            "phase": phase,
             "pose": int(pose_index),
             "label": label,
             "seed": pose_seed,
             "reached": bool(errors.min() < REACH_THRESHOLD_CM),
             "terminal_20_step_max_cm": float(
                 errors[-min(HOLD_WINDOW, len(errors)):].max()),
-            "settled": bool(
-                float(np.mean(tail < HOLD_THRESHOLD_CM)) >= SETTLED_FRACTION),
+            "settled": bool(float(np.mean(
+                errors[-tail_width:] < HOLD_THRESHOLD_CM)) >= SETTLED_FRACTION),
         })
-        np.savez_compressed(
-            artifact["out"] / f"{label}.npz", **trace)
-        return {
-            "label": label,
-            "metrics": metrics,
-            "trace": trace,
-            "video": video,
-        }
+        np.savez_compressed(artifact["out"] / f"{label}.npz", **trace)
+        if video:
+            import imageio.v2 as imageio
+            imageio.mimsave(
+                artifact["out"] / f"{label}.gif", video, fps=CLIP_FPS, loop=0)
+        return {"label": label, "metrics": metrics}
 
     rows = []
     try:
         for index in range(args.poses):
             pose_seed = args.pose_seed + index
-            start_pose, goal_pose = sample_task(pose_seed)
+            start_pose, goal_pose = loop.sample_task(pose_seed)
             run = run_pose(
-                f"survey_{args.pose_seed}_{index:02d}", "survey", index,
+                f"survey_{args.pose_seed}_{index:02d}", index,
                 start_pose, goal_pose, pose_seed=pose_seed)
             rows.append(run["metrics"])
             print(
@@ -297,8 +147,7 @@ def run_evaluate(args):
                 f"terminal {run['metrics']['terminal_20_step_cm']:.2f} cm",
                 flush=True)
     finally:
-        renderer.close()
-        environment.close()
+        loop.close()
     summary = {
         "pose_seed": int(args.pose_seed),
         "poses": len(rows),

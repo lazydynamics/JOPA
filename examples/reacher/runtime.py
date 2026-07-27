@@ -17,20 +17,19 @@ import numpy as np
 from jopa import Agent, Block, JointModel, PoseMotionObservation
 from jopa.nn.vae import PoseMotionVAE, load_params
 
+from .spec import NEIGHBORS, REACHER, REFIT_OBS_PRECISION
+
 REPO = Path(__file__).resolve().parents[2]
 ARTIFACTS = REPO / "outputs/reacher_pixels"
 
-# The canonical structured sensor is exactly four frames of pose[4]+motion[2].
-IMG_SIZE = 64
-N_FRAMES = 4
-POSE_DIM = 4
-MOTION_DIM = 2
-SENSOR_CHANNELS = 64
-MOTION_HIDDEN_DIM = 256
-NEIGHBORS = 512
-# Matches the encoder's measured latent noise (sigma ~0.5): the replay latents
-# are observations, not exact data.
-REFIT_OBS_PRECISION = 4.0
+# Geometry lives in `spec`; these are re-exported so existing callers and the
+# figure scripts keep one import site.
+IMG_SIZE = REACHER.img_size
+N_FRAMES = REACHER.n_frames
+POSE_DIM = REACHER.pose_dim
+MOTION_DIM = REACHER.motion_dim
+SENSOR_CHANNELS = REACHER.channels
+MOTION_HIDDEN_DIM = REACHER.motion_hidden_dim
 POSE_GOAL_PRECISION = 200.0
 MOTION_GOAL_PRECISION = 30.0
 GOAL_EIGENVALUE_FLOOR = 0.5
@@ -71,11 +70,18 @@ def latent_subgoal(belief_mean, goal_mean, trust=SUBGOAL_TRUST):
     return belief_mean + trust * delta / distance
 
 
-def _load_bank(directory, sensor_hash):
+def _load_bank(directory, sensor_hash, include_rest=False):
+    """Encoded replay for local refits.
+
+    `include_rest` adds `rest_bank.npz`, extra low-speed babble collected for
+    the holding regime. It is off by default because the reported metrics were
+    measured without it — turning it on is a change to the experiment, not a
+    change to the code, and needs its own measurement.
+    """
     means, controls = [], []
     sources = sorted(glob.glob(str(directory / f"encodings_train_{sensor_hash}*.npz")))
     extra = directory / "rest_bank.npz"
-    if extra.is_file():
+    if include_rest and extra.is_file():
         sources.append(str(extra))
     for source in sources:
         archive = np.load(source)
@@ -88,7 +94,8 @@ def _load_bank(directory, sensor_hash):
 class ReacherLoop:
     """Frozen sensor + conjugate dynamics driving MuJoCo Reacher from pixels."""
 
-    def __init__(self, directory=ARTIFACTS, record=False):
+    def __init__(self, directory=ARTIFACTS, record=False,
+                 include_rest=False):
         directory = Path(directory)
         manifest = json.loads((directory / "manifest.json").read_text())
         sensor_hash = manifest["checkpoints"]["sensor"]["sha256"][:16]
@@ -105,7 +112,8 @@ class ReacherLoop:
             self.sensor, params, log_std_offsets=offsets)
         self.background = np.load(directory / "background.npy", allow_pickle=False)
         self.transition.attach_replay(
-            *_load_bank(directory, sensor_hash), neighbors=NEIGHBORS,
+            *_load_bank(directory, sensor_hash, include_rest),
+            neighbors=NEIGHBORS,
             refresh_every=1, obs_prec=REFIT_OBS_PRECISION)
 
         import gymnasium as gym

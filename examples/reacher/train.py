@@ -31,12 +31,20 @@ from .artifacts import (
     write_manifest,
 )
 from .runtime import (
+    ACTION_PRECISION_HOLD,
+    ACTION_PRECISION_TRAVEL,
+    ACTION_PRIOR_POWER,
+    ACTION_PRIOR_SCALE,
     IMG_SIZE,
     MOTION_DIM,
+    MOTION_GOAL_PRECISION,
     MOTION_HIDDEN_DIM,
     N_FRAMES,
     POSE_DIM,
+    POSE_GOAL_PRECISION,
+    SUBGOAL_TRUST,
 )
+from .spec import NEIGHBORS, REFIT_OBS_PRECISION
 
 
 def plot_training_curves(diagnostics, path):
@@ -82,7 +90,21 @@ def run_train(args):
     artifact = paths(args)
     artifact["out"].mkdir(parents=True, exist_ok=True)
     _, split, provenance = split_replay(args)
-    manifest = base_manifest(args, split, provenance)
+    manifest = base_manifest(args, split, provenance, policy={
+        "pose_goal_precision": float(POSE_GOAL_PRECISION),
+        "motion_goal_precision": float(MOTION_GOAL_PRECISION),
+        "action_prior": {
+            "kind": "conditional flat-top on latent goal distance",
+            "travel_precision": float(ACTION_PRECISION_TRAVEL),
+            "hold_precision": float(ACTION_PRECISION_HOLD),
+            "scale": float(ACTION_PRIOR_SCALE),
+            "power": float(ACTION_PRIOR_POWER),
+        },
+        "subgoal": "latent trust region",
+        "subgoal_trust": float(SUBGOAL_TRUST),
+        "localize_neighbors": int(NEIGHBORS),
+        "refit_obs_prec": float(REFIT_OBS_PRECISION),
+    })
     if artifact["manifest"].is_file() and not args.retrain:
         previous = load_manifest(artifact["manifest"])
         if previous.get("architecture") != manifest["architecture"]:
