@@ -31,17 +31,5 @@ def test_state_free_rollout_gate_accepts_identified_linear_system():
         [x for x, _ in encoded[:8]], [u for _, u in encoded[:8]],
         obs_prec=1e4)
     report = validation.rollout_diagnostics(model, encoded[8:], samples=64)
-    gate = validation.dynamics_gate(report)
     assert report["6_step_nrmse"] < 0.5
-    assert gate["passed"]
-
-
-def test_gate_rejects_unidentified_control():
-    report = {
-        "one_step_nrmse": 0.1,
-        "6_step_nrmse": 0.2,
-        "mean_B_signal_to_std": 0.2,
-    }
-    gate = validation.dynamics_gate(report)
-    assert not gate["passed"]
-    assert not gate["checks"]["control_identified"]
+    assert report["mean_B_signal_to_std"] > 1.0

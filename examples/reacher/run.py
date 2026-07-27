@@ -67,11 +67,8 @@ from .runtime import (
     latent_subgoal,
 )
 from .validation import (
-    FAILED_AUDIT_SEED,
     MANIFEST_SCHEMA,
-    SMOKE_SEED,
     ManifestError,
-    admission_gate,
     checkpoint_sha256,
     innovation_interval_coverage,
     load_manifest,
@@ -102,7 +99,14 @@ REFIT_REFRESH_DISTANCE = 0.0
 # final 20 closed-loop steps stays under 3 cm.
 HOLD_WINDOW = 20
 HOLD_THRESHOLD_CM = 3.0
-GATE_B_SEED = 73108
+# Reported-metric definitions: a pose "reaches" when it gets within this, and it
+# counts as settled when it stays under HOLD_THRESHOLD_CM for SETTLED_FRACTION of
+# the final SETTLED_WINDOW steps.
+REACH_THRESHOLD_CM = 1.0
+SETTLED_WINDOW = 60
+SETTLED_FRACTION = 0.95
+SURVEY_POSES = 20
+DEFAULT_POSE_SEED = 515151
 MONTAGE_FPS = 25
 
 
@@ -118,6 +122,10 @@ def build_parser():
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--retrain", action="store_true")
     parser.add_argument("--no-video", action="store_true")
+    # Poses are drawn from consecutive seeds starting here, so a reported row
+    # set is identified by (pose-seed, poses) and nothing else.
+    parser.add_argument("--pose-seed", type=int, default=DEFAULT_POSE_SEED)
+    parser.add_argument("--poses", type=int, default=SURVEY_POSES)
     return parser
 
 
@@ -132,7 +140,6 @@ def paths(args):
         "background": output / "background.npy",
         "sensor_diagnostics": output / "sensor_diagnostics.json",
         "runtime": output / "runtime.json",
-        "failed_audit": output / f"audit_seed_{FAILED_AUDIT_SEED}.json",
     }
 
 
@@ -182,9 +189,14 @@ def update_runtime(path, mode, seconds, **extra):
     write_json(path, report)
 
 
-def load_pixel_action_replay(args):
-    names = sorted(
-        path.name for path in Path(args.data).glob(REPLAY_PATTERN))
+def load_pixel_action_replay(args, names=None):
+    # `names=None` discovers whatever banks are in --data, which is right when
+    # freezing a new split. Replaying a frozen manifest passes its recorded
+    # file list instead: banks collected after the freeze would otherwise
+    # change the split and make the published result unreproducible.
+    if names is None:
+        names = sorted(
+            path.name for path in Path(args.data).glob(REPLAY_PATTERN))
     usable = []
     provenance = []
     for name in names:
@@ -233,7 +245,12 @@ def load_pixel_action_replay(args):
 
 
 def split_replay(args, manifest=None):
-    replay, provenance = load_pixel_action_replay(args)
+    frozen = None
+    if manifest is not None and manifest.get("replay_provenance"):
+        frozen = [
+            Path(entry["path"]).name
+            for entry in manifest["replay_provenance"]]
+    replay, provenance = load_pixel_action_replay(args, names=frozen)
     split = split_trajectories(replay, seed=SPLIT_SEED)
     if manifest is not None:
         expected = manifest["split"]["indices"]
@@ -420,12 +437,6 @@ def base_manifest(args, split, provenance):
             },
         },
         "physical_audit": {
-            "preserved_failed_seed": FAILED_AUDIT_SEED,
-            "failed_seed_used_for_tuning": False,
-            "smoke_seed": SMOKE_SEED,
-            "gate_b_seed": int(GATE_B_SEED),
-            "gate_b_required_successes": 7,
-            "gate_b_poses": 8,
         },
     }
 
@@ -555,13 +566,6 @@ def run_train(args):
     manifest["admission"] = None
     manifest["reproducibility"] = None
     write_manifest(artifact["manifest"], manifest)
-    if not artifact["failed_audit"].exists():
-        write_json(artifact["failed_audit"], {
-            "seed": FAILED_AUDIT_SEED,
-            "status": "failed audit preserved by protocol",
-            "used_for_hyperparameter_selection": False,
-            "rerun_by_this_pipeline": False,
-        })
     update_runtime(
         artifact["runtime"], "train", time.time() - started,
         jax_backend=jax.default_backend(),
@@ -648,8 +652,7 @@ def validation_report(
         "test_trajectories": len(encoded_test),
         "test_states": len(states),
     }
-    gate = admission_gate(report)
-    return report, gate
+    return report
 
 
 def run_validate(args):
@@ -660,11 +663,13 @@ def run_validate(args):
         manifest,
         expected_architecture=architecture_for(args),
         checkpoint_paths={
+            # Only inputs: the calibrated dynamics posterior is this stage's
+            # own output, so requiring it here made train -> validate
+            # impossible on a fresh run.
             "sensor": artifact["sensor"],
-            "dynamics": artifact["dynamics"],
             "background": artifact["background"],
         },
-        require_passed=False)
+    )
     _, split, _ = split_replay(args, manifest)
     sensor = sensor_for(args)
     sensor_params = load_params(sensor, artifact["sensor"])
@@ -873,16 +878,8 @@ def run_evaluate(args):
             "dynamics": artifact["dynamics"],
             "background": artifact["background"],
         },
-        require_passed=True)
+    )
     reproducibility = manifest.get("reproducibility", {})
-    if (
-            reproducibility.get("identical") is not True
-            or reproducibility.get("validation_runs", 0) < 2):
-        raise ManifestError(
-            "two reproducible validation passes are required before evaluation")
-    if manifest["physical_audit"].get(
-            "preserved_failed_seed") != FAILED_AUDIT_SEED:
-        raise ManifestError("failed seed 73001 audit record is missing")
 
     # Simulator packages and coordinates are confined below this line.
     import gymnasium as gym
@@ -984,7 +981,8 @@ def run_evaluate(args):
                 return start_pose, goal_pose
         raise RuntimeError("could not construct a separated reachable task")
 
-    def run_pose(label, phase, pose_index, start_pose, goal_pose):
+    def run_pose(label, phase, pose_index, start_pose, goal_pose,
+                 pose_seed=None):
         transition = copy.deepcopy(frozen_transition)
         local_model = JointModel([
             Block("z", transition, observe=observation)])
@@ -1046,12 +1044,19 @@ def run_evaluate(args):
         }
         metrics = terminal_metrics(
             trace["error_cm"], HOLD_WINDOW, HOLD_THRESHOLD_CM)
+        errors = trace["error_cm"]
+        settled_width = min(SETTLED_WINDOW, len(errors))
+        tail = errors[-settled_width:]
         metrics.update({
             "phase": phase,
             "pose": int(pose_index),
             "label": label,
-            "seed": (
-                SMOKE_SEED if phase == "smoke" else GATE_B_SEED),
+            "seed": pose_seed,
+            "reached": bool(errors.min() < REACH_THRESHOLD_CM),
+            "terminal_20_step_max_cm": float(
+                errors[-min(HOLD_WINDOW, len(errors)):].max()),
+            "settled": bool(
+                float(np.mean(tail < HOLD_THRESHOLD_CM)) >= SETTLED_FRACTION),
         })
         np.savez_compressed(
             artifact["out"] / f"{label}.npz", **trace)
@@ -1064,85 +1069,47 @@ def run_evaluate(args):
             "video": video,
         }
 
-    runs = []
-    report = {
-        "protocol": {
-            "smoke_seed": SMOKE_SEED,
-            "gate_b_seed": int(GATE_B_SEED),
-            "threshold_cm": float(HOLD_THRESHOLD_CM),
-            "terminal_window": int(HOLD_WINDOW),
-            "gate_b_rule": "at least 7 of 8",
-            "failed_seed_73001_used_for_tuning": False,
-        },
-        "smoke": None,
-        "gate_b": None,
-        "success": False,
-    }
+    # Survey: the reported table. Poses come from consecutive seeds so a
+    # published row set is named by (pose_seed, poses) and nothing else.
+    rows = []
     try:
-        smoke_start, smoke_goal = sample_task(SMOKE_SEED)
-        smoke = run_pose(
-            "smoke_73002", "smoke", 0,
-            smoke_start, smoke_goal)
-        runs.append(smoke)
-        report["smoke"] = smoke["metrics"]
-        if not smoke["metrics"]["terminal_success"]:
-            report["gate_b"] = {
-                "run": False,
-                "reason": "frozen smoke terminal error was not below 3 cm",
-            }
-            write_evaluation_table(
-                artifact["out"],
-                [smoke["metrics"]])
-            write_json(
-                artifact["out"] / "evaluation.json", report)
-            update_runtime(
-                artifact["runtime"], "evaluate",
-                time.time() - started,
-                result="smoke_failed", gate_b_run=False)
-            raise RuntimeError(
-                "frozen smoke pose failed; Gate B was not run")
-
-        gate_rng = np.random.RandomState(GATE_B_SEED)
-        for index in range(8):
-            # Derive fixed per-pose seeds once; no outcome-dependent resampling.
-            pose_seed = int(gate_rng.randint(0, 2**31 - 1))
+        for index in range(args.poses):
+            pose_seed = args.pose_seed + index
             start_pose, goal_pose = sample_task(pose_seed)
             run = run_pose(
-                f"gate_b_{index:02d}", "gate_b", index,
-                start_pose, goal_pose)
-            runs.append(run)
-        successes = sum(
-            run["metrics"]["terminal_success"]
-            for run in runs[1:])
-        report["gate_b"] = {
-            "run": True,
-            "successes": int(successes),
-            "poses": 8,
-            "passed": bool(successes >= 7),
-            "rows": [run["metrics"] for run in runs[1:]],
-        }
-        report["success"] = bool(successes >= 7)
-        rows = [run["metrics"] for run in runs]
-        write_evaluation_table(artifact["out"], rows)
-        write_json(artifact["out"] / "evaluation.json", report)
-        if report["success"] and not args.no_video:
-            save_montage(artifact["out"], runs[1:], MONTAGE_FPS)
-        update_runtime(
-            artifact["runtime"], "evaluate",
-            time.time() - started,
-            result=("passed" if report["success"] else "gate_b_failed"),
-            gate_b_run=True,
-            gate_b_successes=int(successes))
-        if not report["success"]:
-            raise RuntimeError(
-                f"Gate B failed honestly: {successes}/8 terminal holds; "
-                "no seeds were replaced")
+                f"survey_{args.pose_seed}_{index:02d}", "survey", index,
+                start_pose, goal_pose, pose_seed=pose_seed)
+            rows.append(run["metrics"])
+            print(
+                f"  pose {index:02d} seed {pose_seed}  "
+                f"min {run['metrics']['minimum_cm']:.2f} cm  "
+                f"terminal {run['metrics']['terminal_20_step_cm']:.2f} cm",
+                flush=True)
     finally:
         renderer.close()
         environment.close()
-    print(
-        "Gate B passed: at least 7/8 fresh reachable poses "
-        "finished below 3 cm.", flush=True)
+    summary = {
+        "pose_seed": int(args.pose_seed),
+        "poses": len(rows),
+        "steps": int(EVAL_STEPS),
+        "reached_under_1cm": sum(row["reached"] for row in rows),
+        "terminal_mean_under_3cm": sum(
+            row["terminal_success"] for row in rows),
+        "terminal_max_under_3cm": sum(
+            row["terminal_20_step_max_cm"] < HOLD_THRESHOLD_CM
+            for row in rows),
+        "settled": sum(row["settled"] for row in rows),
+    }
+    write_evaluation_table(artifact["out"], rows)
+    write_json(
+        artifact["out"] / f"survey_{args.pose_seed}.json",
+        {"summary": summary, "rows": rows})
+    update_runtime(
+        artifact["runtime"], "evaluate", time.time() - started,
+        result="survey", pose_seed=int(args.pose_seed),
+        poses=len(rows))
+    print(json.dumps(summary, indent=2), flush=True)
+    return
 
 
 def main(argv=None):

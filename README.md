@@ -221,7 +221,7 @@ no simulator state. The goal is an image of the arm at the target.
 
 ```bash
 python -m examples.reacher.run train    --data outputs/gpu_run   # sensor + q(A,B,W)
-python -m examples.reacher.run validate --data outputs/gpu_run   # state-free gates
+python -m examples.reacher.run validate --data outputs/gpu_run   # pixel-only diagnostics
 MUJOCO_GL=egl python -m examples.reacher.run evaluate            # closed loop
 ```
 
@@ -310,7 +310,7 @@ actions = model.plan({"z": [start, None, None, goal]})   # exact posterior, one 
 
 | script | what it shows |
 |---|---|
-| [`examples/reacher/`](examples/reacher) | pixel-and-action-only MuJoCo Reacher: `run.py` (train/validate/evaluate), `runtime.py` (the closed loop), `validation.py`, `collect.py` |
+| [`examples/reacher/`](examples/reacher) | pixel-and-action-only MuJoCo Reacher: `run.py` (train/validate/evaluate), `runtime.py` (the closed loop), `validation.py` (pixel-only diagnostics), `collect.py` |
 | [`digits_rotating.py`](examples/digits_rotating.py) | latent linear dynamics behind a frozen VAE; the smoothing sweep extrapolating |
 | [`digits_controlled.py`](examples/digits_controlled.py) | add controls, learn `B`, predict under action regimes |
 | [`digits_end_to_end.py`](examples/digits_end_to_end.py) | variational EM — dynamics and VAE weights learned together |

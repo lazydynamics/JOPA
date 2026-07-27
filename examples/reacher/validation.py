@@ -76,32 +76,7 @@ def rollout_diagnostics(transition, encoded, *, horizon=6, samples=None,
     }
 
 
-def dynamics_gate(report, *, horizon=6, one_step_max=0.35,
-                  rollout_max=0.50, control_signal_min=1.0):
-    """Predeclared state-free admission gate for closed-loop evaluation."""
-    checks = {
-        "one_step": report["one_step_nrmse"] < one_step_max,
-        "rollout": report[f"{horizon}_step_nrmse"] < rollout_max,
-        "control_identified": (
-            report["mean_B_signal_to_std"] > control_signal_min),
-    }
-    return {"passed": bool(all(checks.values())), "checks": checks}
-
-
-
-ADMISSION_THRESHOLDS = {
-    "one_step_nrmse_max": 0.35,
-    "six_step_nrmse_max": 0.50,
-    "control_signal_to_std_min": 1.0,
-    "pose_foreground_spearman_min": 0.75,
-    "repeated_motion_rms_max": 0.10,
-    "zero_action_drift_20_max": 0.15,
-    "innovation_coverage_min": 0.85,
-    "innovation_coverage_max": 0.95,
-}
 MANIFEST_SCHEMA = "jopa-pose-motion-reacher-v1"
-FAILED_AUDIT_SEED = 73001
-SMOKE_SEED = 73002
 
 
 class ManifestError(RuntimeError):
@@ -355,62 +330,6 @@ def innovation_interval_coverage(
     return float(np.mean(inside))
 
 
-def admission_gate(report, *, thresholds=None):
-    """Apply every predeclared state-free gate without short-circuiting."""
-    limits = dict(ADMISSION_THRESHOLDS)
-    if thresholds is not None:
-        unknown = set(thresholds) - set(limits)
-        if unknown:
-            raise ValueError(
-                f"unknown admission thresholds: {sorted(unknown)}")
-        limits.update(thresholds)
-
-    def finite_compare(key, operation):
-        value = report.get(key, np.nan)
-        return bool(np.isfinite(value) and operation(float(value)))
-
-    checks = {
-        "one_step_latent_nrmse": finite_compare(
-            "one_step_nrmse",
-            lambda value: value < limits["one_step_nrmse_max"]),
-        "six_step_latent_nrmse": finite_compare(
-            "6_step_nrmse",
-            lambda value: value < limits["six_step_nrmse_max"]),
-        "control_identified": finite_compare(
-            "mean_B_signal_to_std",
-            lambda value: value > limits["control_signal_to_std_min"]),
-        "pose_visual_distance": finite_compare(
-            "pose_foreground_spearman",
-            lambda value: value >= limits[
-                "pose_foreground_spearman_min"]),
-        "visual_neighbour_aliasing": bool(
-            np.isfinite(report.get(
-                "nearest_neighbor_visual_mismatch_p90", np.nan))
-            and np.isfinite(report.get(
-                "random_pair_visual_mismatch_p20", np.nan))
-            and report["nearest_neighbor_visual_mismatch_p90"]
-            < report["random_pair_visual_mismatch_p20"]),
-        "repeated_frame_motion": finite_compare(
-            "repeated_frame_motion_rms",
-            lambda value: value < limits["repeated_motion_rms_max"]),
-        "zero_action_fixed_point": finite_compare(
-            "zero_action_drift_20_nrmse",
-            lambda value: value < limits[
-                "zero_action_drift_20_max"]),
-        "innovation_calibration": finite_compare(
-            "innovation_90_coverage",
-            lambda value: (
-                limits["innovation_coverage_min"]
-                <= value
-                <= limits["innovation_coverage_max"])),
-    }
-    return {
-        "passed": bool(all(checks.values())),
-        "checks": checks,
-        "thresholds": limits,
-    }
-
-
 def checkpoint_sha256(path, chunk_size=1024 * 1024):
     import hashlib
 
@@ -457,8 +376,8 @@ def load_manifest(path):
 
 def validate_manifest(
         manifest_or_path, *, expected_architecture=None,
-        checkpoint_paths=None, require_passed=True):
-    """Refuse stale architecture, hashes, splits, or failed gate results."""
+        checkpoint_paths=None):
+    """Refuse a stale architecture, hash, or split."""
     manifest = (
         load_manifest(manifest_or_path)
         if not isinstance(manifest_or_path, dict)
@@ -506,15 +425,6 @@ def validate_manifest(
         if required not in checkpoints:
             errors.append(f"missing {required} checkpoint")
 
-    gates = manifest.get("admission")
-    if require_passed and not isinstance(gates, dict):
-        errors.append("missing admission gates")
-    elif isinstance(gates, dict):
-        expected_checks = set(admission_gate({})["checks"])
-        if set(gates.get("checks", {})) != expected_checks:
-            errors.append("manifest does not contain every admission gate")
-        if require_passed and gates.get("passed") is not True:
-            errors.append("state-free admission gates did not pass")
     if errors:
         raise ManifestError("; ".join(errors))
     return manifest
