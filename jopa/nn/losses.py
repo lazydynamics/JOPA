@@ -4,7 +4,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from ..config import EPS_CORRELATION_STD, EPS_VARIANCE
+from ..config import EPS_VARIANCE
 
 
 def decorrelation(features, *, normalize=False):
@@ -23,7 +23,7 @@ def decorrelation(features, *, normalize=False):
         jax.nn.relu(1.0 - std) + jax.nn.relu(-jnp.log(std)))
     centered = features - jnp.mean(features, axis=0)
     if normalize:
-        centered = centered / jnp.maximum(std, EPS_CORRELATION_STD)
+        centered = centered / jnp.maximum(std, 1e-3)
     covariance = centered.T @ centered / jnp.maximum(
         features.shape[0] - 1, 1)
     off_diagonal = covariance - jnp.diag(jnp.diag(covariance))

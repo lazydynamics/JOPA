@@ -12,9 +12,6 @@ import jax.numpy as jnp
 from ..config import (
     CONV_KERNEL,
     CONV_STRIDE,
-    DECODER_BASE_SIZE_LARGE,
-    DECODER_BASE_SIZE_SMALL,
-    DECODER_LOGIT_GAIN,
     DEFAULT_IMG_SIZE,
     DEFAULT_LATENT_DIM,
     DEFAULT_N_FRAMES,
@@ -89,8 +86,8 @@ class _Decoder(nn.Module):
     def __call__(self, z):
         c = self.ch
         k, up = CONV_KERNEL, (CONV_STRIDE, CONV_STRIDE)
-        base = (DECODER_BASE_SIZE_SMALL if self.img_size == IMG_SIZE_SMALL
-                else DECODER_BASE_SIZE_LARGE)
+        base = (7 if self.img_size == IMG_SIZE_SMALL
+                else 8)
         x = nn.Dense(TRUNK_WIDTH)(z)
         x = nn.relu(nn.Dense(TRUNK_WIDTH)(x))
         x = nn.relu(nn.Dense(base * base * c * 2)(x))
@@ -102,4 +99,4 @@ class _Decoder(nn.Module):
         x = nn.relu(nn.ConvTranspose(c, k, strides=up, padding="SAME")(x))       # S/2
         x = nn.ConvTranspose(self.n_frames, k, strides=up, padding="SAME")(x)    # S×S×K
         x = jnp.transpose(x, (0, 3, 1, 2))                                       # (B, K, S, S)
-        return jax.nn.sigmoid(DECODER_LOGIT_GAIN * x).reshape((z.shape[0], -1))
+        return jax.nn.sigmoid(5.0 * x).reshape((z.shape[0], -1))

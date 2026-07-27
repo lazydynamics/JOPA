@@ -13,33 +13,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from .config import (
-    AFFINE_VMP_ITERATIONS,
     DEFAULT_DELAY,
-    DELAY_INIT_A_COV,
-    DELAY_INIT_B_COV,
-    DELAY_LEARNED_A_COV,
-    DELAY_LEARNED_B_COV,
-    DELAY_PROCESS_STD,
-    DELAY_REPLAY_OBS_PRECISION,
-    DELAY_REPLAY_REFRESH_EVERY,
-    DELAY_REPLAY_VMP_ITERATIONS,
-    DELAY_SHIFT_COV,
-    DELAY_SHIFT_PROCESS_STD,
-    DELAY_VMP_ITERATIONS,
-    DELAY_W_DF_FLOOR,
     INIT_A_COV,
     INIT_B_COV,
-    KNOWN_PHYSICS_PROCESS_STD,
     LEARN_OBSERVED_PRECISION,
-    OBSERVED_FIT_PRECISION,
     PRIOR_A_COV,
     PRIOR_B_COV,
     PRIOR_W_DF,
     REPLAY_NEIGHBORS,
-    REPLAY_OBS_PRECISION,
-    REPLAY_REFRESH_DISTANCE,
-    REPLAY_REFRESH_EVERY,
-    REPLAY_VMP_ITERATIONS,
     VMP_ITERATIONS,
     WHITENING_STD_FLOOR,
     WISHART_DF_MARGIN,
@@ -68,7 +49,7 @@ class KnownPhysics:
     learned = False
 
     def __init__(self, dim, linearize: Callable, du=0,
-                 process_std=KNOWN_PHYSICS_PROCESS_STD):
+                 process_std=1e-2):
         self.dim = dim
         self.du = du
         self.linearize = linearize
@@ -297,10 +278,10 @@ class LearnedLinear:
         return ct_forward(belief, cache, u)
 
     def attach_replay(self, state_seqs, ctrl_seqs, neighbors=REPLAY_NEIGHBORS,
-                      refresh_every=REPLAY_REFRESH_EVERY,
-                      obs_prec=REPLAY_OBS_PRECISION,
-                      n_iterations=REPLAY_VMP_ITERATIONS,
-                      refresh_distance=REPLAY_REFRESH_DISTANCE):
+                      refresh_every=1,
+                      obs_prec=1e6,
+                      n_iterations=8,
+                      refresh_distance=0.0):
         """Attach encoded replay for local conjugate refits at the belief.
 
         Replay holds only sensor-encoded states and the agent's actions. At
@@ -467,6 +448,19 @@ class LearnedLinear:
             return None
         return gaussian_mean(self.q_b).reshape(self.dim, self.eff_du)[:, -1]
 
+    @property
+    def c_std(self):
+        """Marginal posterior standard deviation of the learned drift.
+
+        Shrinks as `learn`/`remember` accumulate evidence about a constant
+        disturbance, and grows again under `remember(diffuse=...)`. Watching it
+        is how you see whether the drift is being identified or merely tracked.
+        """
+        if not self.offset or self.q_b is None:
+            return None
+        _, cov = gaussian_mean_cov(self.q_b)
+        return jnp.sqrt(jnp.diag(cov)).reshape(self.dim, self.eff_du)[:, -1]
+
 
 class LearnedDelayLinear(LearnedLinear):
     """Conjugate controlled dynamics with a companion delay-state prior.
@@ -480,13 +474,13 @@ class LearnedDelayLinear(LearnedLinear):
     """
 
     def __init__(self, feature_dim, delay=DEFAULT_DELAY, du=0,
-                 n_iterations=DELAY_VMP_ITERATIONS,
-                 offset=True, learned_a_cov=DELAY_LEARNED_A_COV,
-                 learned_b_cov=DELAY_LEARNED_B_COV,
-                 init_a_cov=DELAY_INIT_A_COV, init_b_cov=DELAY_INIT_B_COV,
-                 shift_cov=DELAY_SHIFT_COV,
-                 process_std=DELAY_PROCESS_STD,
-                 shift_process_std=DELAY_SHIFT_PROCESS_STD,
+                 n_iterations=30,
+                 offset=True, learned_a_cov=1.0,
+                 learned_b_cov=1e3,
+                 init_a_cov=1.0, init_b_cov=1e3,
+                 shift_cov=1e-6,
+                 process_std=0.1,
+                 shift_process_std=0.01,
                  prior_W_df=None, mode="joint"):
         self.feature_dim = int(feature_dim)
         self.delay = int(delay)
@@ -609,15 +603,15 @@ class LearnedDelayLinear(LearnedLinear):
         top_cov = jnp.linalg.inv(wishart_mean(reg.q_W))
         full_cov = jnp.diag(jnp.full(d, self.shift_process_std ** 2))
         full_cov = full_cov.at[-h:, -h:].set(top_cov)
-        df = max(float(d + WISHART_DF_MARGIN), DELAY_W_DF_FLOOR)
+        df = max(float(d + WISHART_DF_MARGIN), 1e3)
         self.q_W = Wishart(df=df, inv_scale=df * full_cov)
         self._carried_a = self._carried_W = self._carried_b = None
         return self
 
     def attach_replay(self, state_seqs, ctrl_seqs, neighbors=REPLAY_NEIGHBORS,
-                      refresh_every=DELAY_REPLAY_REFRESH_EVERY,
-                      obs_prec=DELAY_REPLAY_OBS_PRECISION,
-                      n_iterations=DELAY_REPLAY_VMP_ITERATIONS):
+                      refresh_every=4,
+                      obs_prec=1e2,
+                      n_iterations=6):
         """Attach frozen-encoder replay for online local conjugate fits.
 
         Replay contains only delay vectors and the agent's actions. At refresh,
@@ -673,10 +667,10 @@ class LearnedAffine:
     learned = True
 
     def __init__(self, input_dim, output_dim, du=0,
-                 n_iterations=AFFINE_VMP_ITERATIONS,
+                 n_iterations=20,
                  prior_a_cov=PRIOR_A_COV, prior_a_mean=None,
                  prior_b_cov=PRIOR_B_COV,
-                 prior_W_df=PRIOR_W_DF, obs_prec=OBSERVED_FIT_PRECISION):
+                 prior_W_df=PRIOR_W_DF, obs_prec=1e6):
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.du = du

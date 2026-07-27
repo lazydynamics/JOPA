@@ -26,27 +26,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .config import (
-    AGENT_ACTION_PRECISION,
-    AGENT_FORGET,
-    AGENT_GOAL_PRECISION,
-    AGENT_HOLD_DRIFT_DIFFUSION,
-    AGENT_HOLD_FORGET,
-    AGENT_HORIZON,
-    AGENT_INITIAL_GOAL_DISTANCE,
-    AGENT_MIN_EXCITATION,
     AGENT_OFFSET_PIN_PRECISION,
-    AGENT_PLAN_BELIEF_PRECISION,
-    AGENT_PLAN_PRECISION_SCALE,
-    AGENT_RELIN_EVERY,
-    AGENT_RELIN_RADIUS,
-    AGENT_RELIN_SURPRISE,
-    AGENT_U_CLIP,
-    AGENT_WINDOW,
-    GOAL_PRECISION_PSD_TOLERANCE,
-    GOAL_PRECISION_SYMMETRY_ATOL,
-    GOAL_PRECISION_SYMMETRY_RTOL,
-    SURPRISE_EMA_DECAY,
-    SURPRISE_EMA_WEIGHT,
 )
 from .distributions import (
     Gaussian,
@@ -111,18 +91,18 @@ class Agent:
         may not be a calibrated physical metric.
     """
 
-    def __init__(self, model, horizon=AGENT_HORIZON, forget=AGENT_FORGET,
-                 window=AGENT_WINDOW, relin_every=AGENT_RELIN_EVERY,
-                 action_precision=AGENT_ACTION_PRECISION,
-                 goal_precision=AGENT_GOAL_PRECISION,
-                 u_clip=AGENT_U_CLIP, subgoal=None, goal_metric=None,
-                 min_excitation=AGENT_MIN_EXCITATION,
-                 relin_surprise=AGENT_RELIN_SURPRISE,
-                 relin_radius=AGENT_RELIN_RADIUS,
+    def __init__(self, model, horizon=6, forget=0.5,
+                 window=10, relin_every=4,
+                 action_precision=0.05,
+                 goal_precision=200.0,
+                 u_clip=1.0, subgoal=None, goal_metric=None,
+                 min_excitation=0.01,
+                 relin_surprise=0.02,
+                 relin_radius=0.1,
                  adapt_hold=True, track_uncertainty=False,
                  goal_schedule="adaptive", condition_on_estimate=False,
-                 plan_belief_precision=AGENT_PLAN_BELIEF_PRECISION,
-                 plan_precision_scale=AGENT_PLAN_PRECISION_SCALE):
+                 plan_belief_precision=1e8,
+                 plan_precision_scale=1.0):
         self.model = model
         self._block = model._controllable()
         self._tr = self._block.transition
@@ -156,7 +136,7 @@ class Agent:
         self._meta = _identity_meta(d)
         self._action_precision = action_precision
         self._prior_u = self._action_prior(
-            action_precision(AGENT_INITIAL_GOAL_DISTANCE)
+            action_precision(1e6)
             if callable(action_precision) else action_precision)
         self.last_action_precision = None
         self._pg = self._goal_precision_matrix(goal_precision, d)
@@ -257,8 +237,8 @@ class Agent:
                     "goal_precision matrix must have shape "
                     f"({dim}, {dim}), got {value.shape}")
             if not np.allclose(value, value.T,
-                               rtol=GOAL_PRECISION_SYMMETRY_RTOL,
-                               atol=GOAL_PRECISION_SYMMETRY_ATOL):
+                               rtol=1e-5,
+                               atol=1e-6):
                 raise ValueError("goal_precision matrix must be symmetric")
             matrix = 0.5 * (value + value.T)
         else:
@@ -266,7 +246,7 @@ class Agent:
                 "goal_precision must be a scalar, vector, or matrix")
         if not np.all(np.isfinite(matrix)):
             raise ValueError("goal_precision must contain only finite values")
-        tolerance = GOAL_PRECISION_PSD_TOLERANCE * max(
+        tolerance = 1e-6 * max(
             1.0, float(np.max(np.abs(matrix))))
         if float(np.linalg.eigvalsh(matrix).min()) < -tolerance:
             raise ValueError("goal_precision matrix must be positive-semidefinite")
@@ -308,8 +288,8 @@ class Agent:
                               self._augment_u(self._u_prev))
             self.surprise = float(jnp.linalg.norm(
                 gaussian_mean(obs_msg) - gaussian_mean(pred)))
-            self._surprise_ema = (SURPRISE_EMA_DECAY * self._surprise_ema
-                                  + SURPRISE_EMA_WEIGHT * self.surprise)
+            self._surprise_ema = (0.7 * self._surprise_ema
+                                  + 0.3 * self.surprise)
             self.belief = combine_gaussians(pred, obs_msg)
         m = np.asarray(gaussian_mean(self.belief))
         if self.track_uncertainty:
@@ -352,8 +332,8 @@ class Agent:
             # absorbed into the learned offset instead of being fought.
             self._tr.learn([self._msgs[-self.window:]],
                            [self._acts[-(self.window - 1):] if self.window > 1 else []])
-            self._tr.remember(forget=AGENT_HOLD_FORGET,
-                              diffuse=AGENT_HOLD_DRIFT_DIFFUSION)
+            self._tr.remember(forget=1.0,
+                              diffuse=1e-3)
             self._cache = CTCache(self._tr.q_a, self._tr.q_W, self._meta,
                                   self._tr.q_b)
         # Plan by exact inference. Goal-factor placement is explicit and does

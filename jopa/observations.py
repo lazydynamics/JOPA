@@ -14,22 +14,13 @@ import optax
 
 from .config import (
     CALIBRATION_COVERAGE,
-    CALIBRATION_OFFSET_CLIP,
     DEFAULT_IMG_SIZE,
     DEFAULT_N_FRAMES,
     DEFAULT_SEED,
     EPS_DIVISION,
     GOAL_EIGENVALUE_FLOOR,
-    GOAL_MOTION_PRECISION,
-    GOAL_POSE_MEAN_PRECISION,
-    GOAL_PRECISION_RIDGE,
-    GOAL_SALIENCY_FLOOR,
-    GOAL_SALIENCY_MAX_FLOOR,
     LOG_STD_CLIP,
     PROB_CLIP,
-    VAE_M_STEP_BETA_RECON,
-    VAE_M_STEP_COUNT,
-    VAE_M_STEP_LR,
 )
 from .distributions import Gaussian
 from .nn.vae import _as_batch, _latest_frame
@@ -90,9 +81,9 @@ class LearnedVAE(Observation):
     returns its latest frame."""
     learnable = True
 
-    def __init__(self, model, params, lr=VAE_M_STEP_LR,
-                 n_m_steps=VAE_M_STEP_COUNT,
-                 beta_recon=VAE_M_STEP_BETA_RECON, seed=DEFAULT_SEED):
+    def __init__(self, model, params, lr=5e-5,
+                 n_m_steps=20,
+                 beta_recon=1.0, seed=DEFAULT_SEED):
         self.model = model
         self.params = params
         self.n_frames = getattr(model, "n_frames", DEFAULT_N_FRAMES)
@@ -274,7 +265,7 @@ class PoseMotionObservation(Observation):
     @staticmethod
     def calibration_offsets(
             innovations, base_log_stds, coverage=CALIBRATION_COVERAGE,
-            clip=CALIBRATION_OFFSET_CLIP):
+            clip=(-4.0, 4.0)):
         """Quantile-match per-dimension innovation scales.
 
         Inputs are latent innovations and encoder log standard deviations
@@ -316,8 +307,8 @@ class PoseMotionObservation(Observation):
 
     def goal_precision(
             self, goal_frame, background=None,
-            pose_mean_precision=GOAL_POSE_MEAN_PRECISION,
-            motion_precision=GOAL_MOTION_PRECISION,
+            pose_mean_precision=50.0,
+            motion_precision=100.0,
             eigenvalue_floor=GOAL_EIGENVALUE_FLOOR):
         """Decoder-Jacobian image metric for a static image goal."""
         if pose_mean_precision <= 0 or motion_precision <= 0:
@@ -346,8 +337,8 @@ class PoseMotionObservation(Observation):
         jacobian = jax.jacrev(render_pose)(pose)
         saliency = jnp.abs(frame - background_array)
         saliency = saliency / jnp.maximum(
-            jnp.max(saliency), GOAL_SALIENCY_MAX_FLOOR)
-        weight = GOAL_SALIENCY_FLOOR + saliency
+            jnp.max(saliency), 1e-6)
+        weight = 1e-3 + saliency
         flat_jacobian = jacobian.reshape((-1, self.pose_dim))
         pose_precision = (
             flat_jacobian.T
@@ -355,7 +346,7 @@ class PoseMotionObservation(Observation):
         pose_precision = 0.5 * (
             pose_precision + pose_precision.T)
         pose_precision = (
-            pose_precision + GOAL_PRECISION_RIDGE * jnp.eye(self.pose_dim))
+            pose_precision + 1e-6 * jnp.eye(self.pose_dim))
         diagonal_mean = jnp.mean(jnp.diag(pose_precision))
         pose_precision = (
             pose_precision

@@ -3,8 +3,6 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from .config import NEAR_IDENTITY_PRIOR_COV
-
 
 class Gaussian(NamedTuple):
     """Multivariate normal in information form:  η = Λμ,  Λ = Σ⁻¹."""
@@ -57,7 +55,7 @@ def gaussian_logpdf(g: Gaussian, x: jnp.ndarray) -> jnp.ndarray:
 
 
 def near_identity_prior(
-        latent_dim: int, cov: float = NEAR_IDENTITY_PRIOR_COV) -> dict:
+        latent_dim: int, cov: float = 0.5) -> dict:
     """Kwargs centring vec(A) on the identity matrix — useful when you expect
     small per-step changes in the latent state. Drop into LearnedLinear with
     ``**``-unpacking."""

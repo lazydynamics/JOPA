@@ -222,6 +222,7 @@ def run_evaluate(args):
             "error_cm": [], "latent_error": [], "control_norm": [],
             "observation_std": [], "belief_std": [],
             "action_std": [], "B_std": [], "surprise": [],
+            "drift_norm": [], "drift_std": [],
         }
         video = []
         for _ in range(EVAL_STEPS):
@@ -246,6 +247,10 @@ def run_evaluate(args):
             trace["B_std"].append(float(np.mean(
                 np.asarray(agent.transition.B_std))))
             trace["surprise"].append(float(agent.surprise))
+            drift, drift_std = agent.transition.c, agent.transition.c_std
+            if drift is not None:
+                trace["drift_norm"].append(float(np.linalg.norm(drift)))
+                trace["drift_std"].append(float(np.mean(drift_std)))
             if not args.no_video:
                 video.append(render_rgb(show_target=True))
         trace = {

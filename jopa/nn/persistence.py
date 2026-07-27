@@ -11,7 +11,6 @@ import numpy as np
 from flax import serialization
 
 from ..config import (
-    CHECKPOINT_HEADER_BYTES,
     DEFAULT_IMG_SIZE,
     DEFAULT_N_FRAMES,
     DEFAULT_SEED,
@@ -76,7 +75,7 @@ def load_params(model, path: str | Path) -> dict:
     init_input = (jnp.ones((1, S, S)) if K == 1 else jnp.ones((1, K, S, S)))
     template = model.init({"params": rng}, init_input, rng)
     with open(path, "rb") as f:
-        header = f.read(CHECKPOINT_HEADER_BYTES)
+        header = f.read(4)
     if header.startswith(b"PK"):
         with np.load(path) as data:
             leaves = jax.tree.leaves(template)

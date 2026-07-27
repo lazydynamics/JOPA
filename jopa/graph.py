@@ -19,12 +19,6 @@ import jax
 import jax.numpy as jnp
 
 from .config import (
-    ACTION_PRIOR_COLUMN_FLOOR,
-    ACTION_PRIOR_SHIFT_FLOOR,
-    COUPLING_NOISE_FLOOR,
-    COUPLING_RIDGE,
-    KNOWN_ACTION_PRIOR_PRECISION,
-    KNOWN_PLAN_W_DF,
     PLAN_OFFSET_PIN_PRECISION,
     PLAN_VMP_ITERATIONS,
     POINT_ESTIMATE_COV,
@@ -74,9 +68,9 @@ class LinearCoupling:
         to_name: str,
         x_from,
         x_to,
-        ridge: float = COUPLING_RIDGE,
+        ridge: float = 1e-3,
         affine: bool = True,
-        noise_floor: float = COUPLING_NOISE_FLOOR,
+        noise_floor: float = 1e-8,
     ):
         """Fit `x_to ~= M @ x_from + offset` by ridge regression.
 
@@ -161,7 +155,7 @@ def _known_plan_cache(tr: KnownPhysics, prior_x: Gaussian):
     B_aug = jnp.concatenate([B, offset], axis=1)
     eff_du = du + 1
 
-    df = KNOWN_PLAN_W_DF
+    df = 100.0
     q_a = gaussian_prior(d * d, POINT_ESTIMATE_COV, A.ravel())
     q_b = gaussian_prior(d * eff_du, POINT_ESTIMATE_COV, B_aug.ravel())
     q_W = Wishart(df=df, inv_scale=df * tr.Q)         # E[W] = Q⁻¹
@@ -182,7 +176,7 @@ def _augment_prior_u(prior_u: Gaussian, eff_du: int) -> Gaussian:
 def _default_action_prior(d, du, q_b, raw, msgs, start_mean, eff_du=None):
     """Action prior from start→goal latent shift: var(u_i) = ‖μ_e − μ_s‖² / ‖B_col_i‖²."""
     mB = gaussian_mean(q_b).reshape(d, eff_du or du)[:, :du]
-    b_col_var = jnp.sum(mB ** 2, axis=0) + ACTION_PRIOR_COLUMN_FLOOR
+    b_col_var = jnp.sum(mB ** 2, axis=0) + 1e-8
     present = [i for i, o in enumerate(raw) if o is not None]
     if start_mean is not None and present:
         mu_s, mu_e = start_mean, gaussian_mean(msgs[present[-1]])
@@ -191,7 +185,7 @@ def _default_action_prior(d, du, q_b, raw, msgs, start_mean, eff_du=None):
     else:
         return Gaussian(eta=jnp.zeros(du), lam=jnp.diag(b_col_var))
     shift = jnp.maximum(
-        jnp.sum((mu_e - mu_s) ** 2), ACTION_PRIOR_SHIFT_FLOOR)
+        jnp.sum((mu_e - mu_s) ** 2), 1e-8)
     return Gaussian(eta=jnp.zeros(du), lam=jnp.diag(b_col_var / shift))
 
 
@@ -298,7 +292,7 @@ class JointModel:
         if prior_u is None:
             prior_u = Gaussian(
                 eta=jnp.zeros(du),
-                lam=jnp.eye(du) * KNOWN_ACTION_PRIOR_PRECISION)
+                lam=jnp.eye(du) * 1e-2)
         return _solve(cache, _augment_prior_u(prior_u, eff_du))[:, :du]
 
     def smooth(self, observations, n_predict=0, controls=None, predict_controls=None):

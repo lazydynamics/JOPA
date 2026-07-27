@@ -11,13 +11,10 @@ import optax
 from tqdm import tqdm
 
 from ..config import (
-    BACKGROUND_SAMPLE_FRAMES,
-    BOOTSTRAP_A_DECAY,
     DEFAULT_MOTION_DIM,
     DEFAULT_POSE_DIM,
     DEFAULT_WINDOW_FRAMES,
     EPS_DIVISION,
-    EPS_LATENT_SCALE,
     EPS_NORMALIZER,
     EPS_SQRT,
     IMG_SIZE_MEDIUM,
@@ -248,7 +245,7 @@ def train_pose_motion_vae(
             for start in range(max(0, len(sequence) - span + 1)))
         take = np.linspace(
             0, len(sequence) - 1,
-            min(BACKGROUND_SAMPLE_FRAMES, len(sequence)), dtype=int)
+            min(8, len(sequence)), dtype=int)
         background_samples.extend(sequence[take])
     if controlled_steps and not controlled_refs:
         raise ValueError(
@@ -361,7 +358,7 @@ def train_pose_motion_vae(
 
     predictor_params = {
         "sensor": sensor_params,
-        "A": BOOTSTRAP_A_DECAY * jnp.eye(latent_dim),
+        "A": 0.95 * jnp.eye(latent_dim),
         "B": jnp.zeros((latent_dim, control_dim)),
         "c": jnp.zeros(latent_dim),
         "inverse": jnp.zeros(
@@ -406,7 +403,7 @@ def train_pose_motion_vae(
         # divisor, and the prediction loss is then minimized by shrinking
         # the encoder output instead of predicting.
         latent_scale = jax.lax.stop_gradient(
-            jnp.std(target, axis=(0, 1), keepdims=True) + EPS_LATENT_SCALE)
+            jnp.std(target, axis=(0, 1), keepdims=True) + 1e-6)
         prediction_mse = jnp.mean(
             ((predictions - target) / latent_scale) ** 2)
         nll = (
