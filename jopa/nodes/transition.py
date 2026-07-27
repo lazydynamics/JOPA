@@ -7,8 +7,8 @@ Structured factorisation: q(y,x) q(a) q(b) q(W).
 """
 import jax
 import jax.numpy as jnp
-from ..distributions import Gaussian, Wishart, gaussian_mean_cov, wishart_mean
 
+from ..distributions import Gaussian, Wishart, gaussian_mean_cov, wishart_mean
 
 # ---------------------------------------------------------------------------
 # Meta
@@ -64,8 +64,21 @@ class CTCache:
     Registered as a JAX pytree so it can be passed into ``jit``/``scan``
     bodies without re-tracing on every VMP iteration.
     """
-    __slots__ = ("mA", "mW", "mW_inv", "Va", "ma", "EaaT", "dy", "dx",
-                 "mB", "Vb", "mb", "EbbT", "du")
+    __slots__ = (
+        "EaaT",
+        "EbbT",
+        "Va",
+        "Vb",
+        "du",
+        "dx",
+        "dy",
+        "mA",
+        "mB",
+        "mW",
+        "mW_inv",
+        "ma",
+        "mb",
+    )
 
     def __init__(self, q_a: Gaussian, q_W: Wishart, meta: CTMeta,
                  q_b: Gaussian | None = None):
@@ -200,7 +213,7 @@ def ct_message_a(q_yx: Gaussian, c: CTCache, u=None) -> Gaussian:
     When control input u is present, the cross-moment E[x yᵀ] is adjusted
     to E[x (y - Bu)ᵀ].
     """
-    dy, dx = c.dy, c.dx
+    dy = c.dy
     m_yx, V_yx = gaussian_mean_cov(q_yx)
     my, mx = m_yx[:dy], m_yx[dy:]
     Vx = V_yx[dy:, dy:]

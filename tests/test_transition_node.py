@@ -1,8 +1,14 @@
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
-from jopa.distributions import Gaussian, Wishart, gaussian_mean, gaussian_mean_cov, gaussian_prior
+from jopa.distributions import (
+    Gaussian,
+    Wishart,
+    gaussian_mean,
+    gaussian_mean_cov,
+    gaussian_prior,
+)
 from jopa.message_passing import accumulate_vmp_messages
 from jopa.nodes.transition import CTCache, CTMeta, ct_forward, ct_message_a
 

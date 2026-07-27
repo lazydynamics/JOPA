@@ -5,13 +5,14 @@ and M-step (VAE param updates against dynamics posterior) so the encoder
 produces latent codes consistent with the learned linear dynamics.
 """
 import os
+
 import jax.numpy as jnp
 import numpy as np
 
-from jopa.distributions import Gaussian
-from jopa.blocks import JointModel, Block, LearnedLinear, Frozen, LearnedVAE
-from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
+from jopa.blocks import Block, Frozen, JointModel, LearnedLinear, LearnedVAE
 from jopa.data import load_mnist, rotating_mnist, rotation_sequence
+from jopa.distributions import Gaussian
+from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -19,7 +20,6 @@ OUTPUTS = os.path.join(ROOT, "outputs")
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
 
-# ── 1. Pre-train or load VAE ────────────────────────────────────────────────
 latent_dim = 4
 vae_path = os.path.join(CHECKPOINTS, "vae_e2e_d4.npz")
 vae_model = VAE(latent_dim=latent_dim)
@@ -38,7 +38,6 @@ except FileNotFoundError:
 
 params_pretrained = params  # keep a copy for baseline
 
-# ── 2. Build observation sequence ───────────────────────────────────────────
 n_observed = 100
 n_predicted = 100
 step_deg = 360.0 / n_observed
@@ -53,7 +52,6 @@ all_frames = rotation_sequence(
 sequence = [jnp.array(f) for f in all_frames[:n_observed]]
 gt_future = [jnp.array(f) for f in all_frames[n_observed:]]
 
-# ── 3. Baseline: system-ID with frozen VAE ─────────────────────────────────
 print("\n── Baseline (frozen VAE) ──")
 vae_pretrained = make_encode_decode(vae_model, params_pretrained)
 
@@ -72,7 +70,6 @@ det_base = float(jnp.linalg.det(H_base))
 eigs_base = np.linalg.eigvals(np.array(H_base))
 print(f"  det(A)={det_base:.4f}  |λ|={np.abs(eigs_base)}")
 
-# ── 4. Variational EM via JointModel + LearnedVAE ──────────────────────────
 print("\n── Variational EM (40 EM iters) ──")
 learned_vae = LearnedVAE(vae_model, params_pretrained, lr=5e-5, n_m_steps=30, beta_recon=1.0, seed=42)
 e2e = JointModel([Block("z", LearnedLinear(dim=latent_dim, n_iterations=20),
@@ -84,12 +81,11 @@ H_e2e = e2e.blocks[0].transition.A
 det_e2e = float(jnp.linalg.det(H_e2e))
 eigs_e2e = np.linalg.eigvals(np.array(H_e2e))
 
-print(f"\n── Final comparison ──")
+print("\n── Final comparison ──")
 print(f"  Baseline:       det(A)={det_base:.4f}  |λ|={np.abs(eigs_base)}")
 print(f"  Variational EM: det(A)={det_e2e:.4f}  |λ|={np.abs(eigs_e2e)}")
 print(f"  Expected step: {step_deg:.2f}°")
 
-# ── 5. Visualise ────────────────────────────────────────────────────────────
 try:
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
@@ -101,7 +97,7 @@ try:
     diag = e2e.diagnostics["z"]
     loss_history = learned_vae.loss_history
 
-    # --- Figure 1: Prediction comparison (4 rows) ---
+    # Figure 1: prediction comparison
     fig1, axes = plt.subplots(4, 10, figsize=(20, 8))
 
     for i, ax in enumerate(axes[0]):
@@ -141,7 +137,7 @@ try:
     plt.savefig(os.path.join(OUTPUTS, "varem_predictions.png"), dpi=150)
     print(f"Saved {OUTPUTS}/varem_predictions.png")
 
-    # --- Figure 2: Training diagnostics ---
+    # Figure 2: training diagnostics
     fig2 = plt.figure(figsize=(16, 10))
     gs = GridSpec(2, 3, figure=fig2)
 
@@ -201,7 +197,7 @@ try:
     plt.savefig(os.path.join(OUTPUTS, "varem_diagnostics.png"), dpi=150)
     print(f"Saved {OUTPUTS}/varem_diagnostics.png")
 
-    # --- Figure 3: Transition matrices side by side ---
+    # Figure 3: transition matrices
     fig3, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.5), constrained_layout=True)
     im1 = ax1.imshow(np.array(H_base), cmap="RdBu_r", vmin=-1, vmax=1)
     ax1.set_title(f"Baseline A (det={det_base:.3f})")

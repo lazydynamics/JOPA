@@ -1,11 +1,16 @@
 """Semantic tests for continual learning: affine drift (offset) and
 posterior-carryover with exponential forgetting (remember)."""
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from jopa.distributions import Gaussian, gaussian_mean, gaussian_mean_cov, gaussian_logpdf
 from jopa.blocks import Block, JointModel, LearnedLinear
+from jopa.distributions import (
+    Gaussian,
+    gaussian_logpdf,
+    gaussian_mean,
+    gaussian_mean_cov,
+)
 
 
 def _msg(mean, prec):

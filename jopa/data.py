@@ -1,5 +1,6 @@
 """Data utilities: MNIST loading and rotating-digit dataset generation."""
 from __future__ import annotations
+
 import gzip
 import os
 import struct
@@ -9,6 +10,16 @@ import numpy as np
 
 _MNIST_URL = "https://storage.googleapis.com/cvdf-datasets/mnist/"
 _CACHE = os.path.expanduser("~/.cache/jopa")
+
+# Fraction of a frame's own maximum above which a pixel counts as ink. Per-frame
+# rather than global because rotation moves mass off-canvas.
+_BINARIZE_THRESHOLD = 0.5
+_FULL_TURN_DEG = 360.0
+# Piecewise-constant angular velocities (deg/step) of the controlled demo
+# sequence: distinct regimes including rest and both directions, so a learned
+# B is identifiable. Each segment is jittered by this standard deviation.
+_SEGMENT_SPEEDS_DEG = (5.0, -3.0, 8.0, 0.0, -5.0)
+_SEGMENT_JITTER_DEG = 0.3
 
 
 def load_mnist():
@@ -60,7 +71,8 @@ def rotate_image(image: np.ndarray, angle_deg: float) -> np.ndarray:
     return image[y_src, x_src] * valid
 
 
-def binarize(img: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+def binarize(img: np.ndarray,
+             threshold: float = _BINARIZE_THRESHOLD) -> np.ndarray:
     """Per-frame binarize using the local max. Returns the all-zero image
     untouched (avoids divide-by-zero on rotations that fall off-canvas)."""
     mx = img.max()
@@ -71,8 +83,9 @@ def binarize(img: np.ndarray, threshold: float = 0.5) -> np.ndarray:
 
 def rotation_sequence(base_img: np.ndarray, n_frames: int,
                       step_deg: float | None = None,
-                      total_deg: float = 360.0,
-                      binarize_threshold: float | None = 0.5) -> list:
+                      total_deg: float = _FULL_TURN_DEG,
+                      binarize_threshold: float | None = _BINARIZE_THRESHOLD
+                      ) -> list:
     """Generate a list of rotated views of ``base_img``.
 
     Parameters
@@ -101,7 +114,7 @@ def rotating_mnist(
     n_rotations: int = 36,
     digits: tuple[int, ...] = (0, 1),
     do_binarize: bool = True,
-    threshold: float = 0.5,
+    threshold: float = _BINARIZE_THRESHOLD,
 ):
     """Create a dataset of rotated MNIST digits.
 
@@ -118,7 +131,7 @@ def rotating_mnist(
         for idx in idxs:
             img = all_imgs[idx]
             for r in range(n_rotations):
-                angle = r * 360.0 / n_rotations
+                angle = r * _FULL_TURN_DEG / n_rotations
                 rot = rotate_image(img, angle)
                 images.append(rot)
                 labels.append(digit)
@@ -136,7 +149,7 @@ def make_controlled_sequence(
     digit_idx: int = 0,
     n_frames: int = 100,
     do_binarize: bool = True,
-    threshold: float = 0.5,
+    threshold: float = _BINARIZE_THRESHOLD,
     seed: int = 0,
 ):
     """Generate a rotation sequence driven entirely by control actions.
@@ -156,14 +169,13 @@ def make_controlled_sequence(
 
     n_trans = n_frames - 1
 
-    # Piecewise constant velocities (deg/step) with distinct regimes
-    segment_len = n_trans // 5
-    raw_speeds = [5.0, -3.0, 8.0, 0.0, -5.0]
+    segment_len = n_trans // len(_SEGMENT_SPEEDS_DEG)
     velocities = np.zeros(n_trans)
-    for i, speed in enumerate(raw_speeds):
+    for i, speed in enumerate(_SEGMENT_SPEEDS_DEG):
         start = i * segment_len
         end = min(start + segment_len, n_trans)
-        velocities[start:end] = speed + rng.randn(end - start) * 0.3
+        velocities[start:end] = (
+            speed + rng.randn(end - start) * _SEGMENT_JITTER_DEG)
 
     angle_deg = np.zeros(n_frames)
     for i in range(1, n_frames):

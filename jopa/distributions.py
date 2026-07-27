@@ -1,6 +1,9 @@
 """Gaussian / Wishart distributions in natural parameter form."""
 from typing import NamedTuple
+
 import jax.numpy as jnp
+
+from .config import NEAR_IDENTITY_PRIOR_COV
 
 
 class Gaussian(NamedTuple):
@@ -53,7 +56,8 @@ def gaussian_logpdf(g: Gaussian, x: jnp.ndarray) -> jnp.ndarray:
                    + d * jnp.log(2.0 * jnp.pi))
 
 
-def near_identity_prior(latent_dim: int, cov: float = 0.5) -> dict:
+def near_identity_prior(
+        latent_dim: int, cov: float = NEAR_IDENTITY_PRIOR_COV) -> dict:
     """Kwargs centring vec(A) on the identity matrix — useful when you expect
     small per-step changes in the latent state. Drop into LearnedLinear with
     ``**``-unpacking."""

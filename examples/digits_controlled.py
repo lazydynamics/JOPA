@@ -5,13 +5,14 @@ The model learns A (autonomous dynamics, prior ~ I) and B (control effect),
 then predicts different futures depending on the action applied.
 """
 import os
+
 import jax.numpy as jnp
 import numpy as np
 
-from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
-from jopa.data import load_mnist, rotating_mnist, make_controlled_sequence
+from jopa.blocks import Block, Frozen, JointModel, LearnedLinear
+from jopa.data import load_mnist, make_controlled_sequence, rotating_mnist
 from jopa.distributions import Gaussian, near_identity_prior
-from jopa.blocks import JointModel, Block, LearnedLinear, Frozen
+from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -19,7 +20,6 @@ OUTPUTS = os.path.join(ROOT, "outputs")
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
 
-# ── 1. VAE ─────────────────────────────────────────────────────────────────
 latent_dim = 4
 vae_path = os.path.join(CHECKPOINTS, "vae_ctrl_d4.npz")
 model = VAE(latent_dim=latent_dim)
@@ -38,7 +38,6 @@ except FileNotFoundError:
 
 vae = make_encode_decode(model, params)
 
-# ── 2. Generate controlled sequence ────────────────────────────────────────
 all_imgs, all_labs = load_mnist()
 digit_idx = np.where(all_labs == 8)[0][0]
 
@@ -57,7 +56,6 @@ act_values = [float(a[0]) for a in actions]
 print(f"  {n_observed} frames, action range: [{min(act_values):.2f}, {max(act_values):.2f}]")
 print(f"  angle range: [{angles.min():.0f}°, {angles.max():.0f}°]")
 
-# ── 3. Learn A and B ──────────────────────────────────────────────────────
 print("\n── Learning A and B (prior: A ~ I) ──")
 
 n_predict = 80
@@ -90,12 +88,10 @@ print(f"\n  det(A)={det_A:.4f}  |λ|={np.abs(eigs)}")
 print(f"  A:\n{H}")
 print(f"  B: {B.T[0]}")
 print(f"  |B|={float(jnp.linalg.norm(B)):.4f}")
-# Note: |B| is small because the action profile in `make_controlled_sequence`
-# is piecewise-constant + tiny noise — so it's highly predictable from state,
-# and the VMP posterior attributes most of the rotation to A rather than B·u.
-# A more independently-varying action profile would lift |B|.
+# |B| stays small because `make_controlled_sequence` uses a piecewise-constant
+# action profile: u is highly predictable from state, so the VMP posterior
+# attributes most of the rotation to A rather than B·u.
 
-# ── 4. Compare predictions under different actions ────────────────────────
 print("\nPredicting under 3 action regimes …")
 
 # Prediction actions in degrees per step — a bit above the training range
@@ -119,7 +115,6 @@ for name, pred_actions in action_regimes.items():
     predictions[name] = out["predictions"]
     latent_trajs[name] = np.array(out["means"])
 
-# ── 5. Visualise ────────────────────────────────────────────────────────────
 try:
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
@@ -127,7 +122,6 @@ try:
     fig = plt.figure(figsize=(20, 14))
     gs = GridSpec(5, 10, figure=fig, hspace=0.5)
 
-    # Row 0: observations
     for i in range(10):
         ax = fig.add_subplot(gs[0, i])
         idx = i * (n_observed // 10)
@@ -137,7 +131,6 @@ try:
         ax.axis("off")
     fig.text(0.01, 0.88, "Observed", fontsize=10, va="center", rotation=90)
 
-    # Rows 1-3: predictions under different regimes
     regime_colors = ["green", "red", "blue"]
     for row, ((name, preds), color) in enumerate(zip(predictions.items(), regime_colors)):
         for i in range(10):
@@ -149,7 +142,6 @@ try:
         fig.text(0.01, 0.72 - row * 0.16, name, fontsize=9, va="center",
                  rotation=90, color=color)
 
-    # Row 4: diagnostics
     ax_act = fig.add_subplot(gs[4, :3])
     ax_act.fill_between(range(len(act_values)), act_values, alpha=0.3, color="g")
     ax_act.plot(act_values, "g-", linewidth=0.8)
@@ -157,11 +149,9 @@ try:
     ax_act.set(xlabel="t", ylabel="u[t]", title="Observed actions (normalised)")
     ax_act.grid(True, alpha=0.3)
 
-    # Latent time series — show divergence across regimes
     ax_lat = fig.add_subplot(gs[4, 3:7])
     traj0 = list(latent_trajs.values())[0]
     t = np.arange(traj0.shape[0])
-    # Pick the latent dim with largest B component
     b_dim = int(np.argmax(np.abs(np.array(B).ravel())))
     ax_lat.plot(t[:n_observed], traj0[:n_observed, b_dim],
                 "k-", alpha=0.5, linewidth=1, label="observed")
@@ -174,7 +164,6 @@ try:
     ax_lat.legend(fontsize=7)
     ax_lat.grid(True, alpha=0.3)
 
-    # A|B matrix
     ax_AB = fig.add_subplot(gs[4, 7:])
     AB = np.hstack([np.array(H), np.array(B)])
     im = ax_AB.imshow(AB, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")

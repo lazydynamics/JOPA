@@ -24,10 +24,10 @@ import pickle
 import jax.numpy as jnp
 import numpy as np
 
+from jopa.blocks import Block, JointModel, LearnedLinear, LearnedVAE
+from jopa.distributions import gaussian_mean, near_identity_prior
 from jopa.envs import SimplePendulum
-from jopa.nn.vae import VAE, train_vae, save_params, load_params
-from jopa.blocks import JointModel, Block, LearnedLinear, LearnedVAE
-from jopa.distributions import near_identity_prior, gaussian_mean
+from jopa.nn.vae import VAE, load_params, save_params, train_vae
 
 _p = argparse.ArgumentParser(description=__doc__,
                              formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -60,10 +60,6 @@ K = args.n_frames
 latent_dim = 4
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# 1. Roll out training trajectories
-# ──────────────────────────────────────────────────────────────────────────
-
 env = SimplePendulum()
 print("Generating training trajectories …")
 n_trajectories, traj_len = 10, 80
@@ -82,10 +78,6 @@ for ep in range(n_trajectories):
     train_actions.append(actions)
 print(f"  {n_trajectories} trajectories × {traj_len} steps")
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# 2. Pre-train multi-frame VAE
-# ──────────────────────────────────────────────────────────────────────────
 
 def windows_of(frames, K):
     """Sliding K-frame windows of a frame sequence."""
@@ -118,10 +110,6 @@ except FileNotFoundError:
     save_params(params, vae_path)
     print(f"Saved multi-frame VAE to {vae_path}")
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# 3. Variational EM: learn latent dynamics
-# ──────────────────────────────────────────────────────────────────────────
 
 print("\n══ System Identification (Variational EM) ══")
 em_cache = os.path.join(CHECKPOINTS, f"em_pendulum_K{K}.pkl")
@@ -175,7 +163,6 @@ if cached is not None:
     block.transition.q_b = cached["q_b"]
     learned_vae.params = cached["vae_params"]
 else:
-    # Each trajectory's "z" observation sequence is its K-frame windows.
     trajs = []
     for frames, actions in zip(train_frames, train_actions):
         windows = list(windows_of(frames, K))
@@ -221,7 +208,7 @@ def save_control_gif(thetas, actions, frames, goal_theta, gif_path, png_path):
     axp.set(xlim=(-1.3, 1.3), ylim=(-1.3, 1.4), aspect="equal")
     axp.set_title("image-goal control", fontsize=11)
     axp.set_xticks([]); axp.set_yticks([])
-    axp.scatter([gx], [gy], marker="*", s=340, color="#d62728", zorder=5)  # goal (upright)
+    axp.scatter([gx], [gy], marker="*", s=340, color="#d62728", zorder=5)
     axp.scatter([0], [0], s=30, color="0.4", zorder=4)
     trail, = axp.plot([], [], "-", color="#1f77b4", alpha=0.25, lw=2, zorder=2)
     rod, = axp.plot([], [], lw=3, color="#1f77b4", zorder=3)
@@ -257,10 +244,6 @@ def save_control_gif(thetas, actions, frames, goal_theta, gif_path, png_path):
     print(f"  saved {gif_path}")
     print(f"  saved {png_path}  (closest err={e.min():.3f}; torque∈[{actions.min():+.1f}, {actions.max():+.1f}])")
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# 4. Receding-horizon MPC
-# ──────────────────────────────────────────────────────────────────────────
 
 print("\n══ Planning as Inference (receding horizon) ══")
 

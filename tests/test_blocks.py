@@ -1,21 +1,33 @@
 """Semantic tests for the JOPA API: distributions, message passing, blocks, planning."""
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from jopa.distributions import (
-    Gaussian, Wishart, gaussian_prior,
-    combine_gaussians, gaussian_mean, gaussian_mean_cov, vague_gaussian,
-)
-from jopa.message_passing import forward_backward, compute_marginals
-from jopa.nodes.transition import CTMeta, CTCache
 from jopa.blocks import (
-    Block, JointModel, Observation, Frozen, LearnedVAE,
-    LearnedLinear, LearnedAffine, KnownPhysics, LinearCoupling,
+    Block,
+    Frozen,
+    JointModel,
+    KnownPhysics,
+    LearnedAffine,
+    LearnedDelayLinear,
+    LearnedLinear,
+    LearnedVAE,
+    LinearCoupling,
+    Observation,
 )
+from jopa.distributions import (
+    Gaussian,
+    Wishart,
+    combine_gaussians,
+    gaussian_mean,
+    gaussian_mean_cov,
+    gaussian_prior,
+    vague_gaussian,
+)
+from jopa.message_passing import compute_marginals, forward_backward
 from jopa.nn.vae import VAE
-
+from jopa.nodes.transition import CTCache, CTMeta
 
 # ---- package surface -------------------------------------------------------
 
@@ -24,7 +36,7 @@ def test_package_exports_are_importable():
     import jopa
     for name in jopa.__all__:
         assert hasattr(jopa, name), f"jopa.{name} is in __all__ but not importable"
-    from jopa import Gaussian, Block, LearnedLinear, LearnedVAE
+    from jopa import Block, Gaussian, LearnedLinear, LearnedVAE
     assert all(callable(x) for x in (Gaussian, Block, LearnedLinear, LearnedVAE))
 
 
@@ -345,46 +357,50 @@ def test_vae_supports_64px_frames():
     assert recon.shape == (2, 64 * 64)
 
 
-def test_jepa_encoder_message_composes_into_block():
-    """JEPA encoder pretrains, emits a Gaussian message, and plugs into a
-    Block whose dynamics are then learned by VMP — the encoder is a frozen
-    sensor; learning stays message passing."""
-    from jopa.nn.jepa import train_jepa
-    from jopa.blocks import LearnedJEPA
-
-    # Tiny synthetic: a bright disc whose position rotates linearly in a 28×28
-    # frame — a latent-linear image stream the predictive encoder can encode.
-    rng = np.random.RandomState(0)
-    A = np.array([[0.0, -1.0], [1.0, 0.0]]) * 0.15 + np.eye(2)
-    yy, xx = np.mgrid[0:28, 0:28]
-    def frame(s):
-        cx, cy = 14 + 8 * s[0], 14 + 8 * s[1]
-        return np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8.0).astype(np.float32)
-    seqs = []
+def test_learned_delay_linear_preserves_shift_and_learns_controlled_top_block():
+    rng = np.random.RandomState(9)
+    h, delay, du = 2, 3, 1
+    B_true = np.array([[0.25], [-0.15]])
+    state_seqs, control_seqs = [], []
     for _ in range(8):
-        s = rng.uniform(-0.6, 0.6, 2)
-        fs = []
-        for _ in range(12):
-            fs.append(frame(s)); s = A @ s
-        seqs.append(np.stack(fs))
+        features = [rng.randn(h) * 0.2, rng.randn(h) * 0.2]
+        controls = []
+        for _ in range(48):
+            u = rng.uniform(-1, 1, du)
+            nxt = 1.65 * features[-1] - 0.7 * features[-2] + B_true @ u
+            nxt += 0.005 * rng.randn(h)
+            features.append(nxt); controls.append(u)
+        z = [np.concatenate(features[t:t + delay]) for t in range(len(features) - delay + 1)]
+        state_seqs.append(np.asarray(z))
+        # Two feature states were seeded before controls[0] generated h[2];
+        # the first window transition h[0:3] -> h[1:4] therefore uses u[1].
+        control_seqs.append(controls[1:])
 
-    model, params = train_jepa(seqs, latent_dim=3, img_size=28,
-                               iterations=30, batch_size=64, verbose=False)
-    obs = LearnedJEPA(model, params, obs_prec=1e2)
-    msg = obs.message(seqs[0][0])
-    assert msg.eta.shape == (3,) and msg.lam.shape == (3, 3)
-    assert obs.learnable is False
-
-    block = Block("z", LearnedLinear(dim=3, n_iterations=5), observe=obs)
-    means, covs = block.transition.learn([[obs.message(f) for f in seqs[0]]])
-    assert means.shape[1] == 3            # VMP produced smoothed latent means
+    d = h * delay
+    expected_shift = np.zeros((d - h, d))
+    expected_shift[:, h:] = np.eye(d - h)
+    tr = LearnedDelayLinear(h, delay=delay, du=du, offset=False,
+                            n_iterations=10, shift_cov=1e-7)
+    tr.learn_observed(state_seqs, control_seqs, obs_prec=1e4)
+    assert np.all(np.isfinite(np.asarray(tr.A)))
+    assert np.allclose(np.asarray(tr.A[:d - h]), expected_shift, atol=1e-5)
+    assert np.max(np.abs(np.asarray(tr.B[:d - h]))) < 1e-5
+    assert np.allclose(np.asarray(tr.B[d - h:]), B_true, atol=0.08)
+    tr.attach_replay(state_seqs, control_seqs, neighbors=64,
+                     refresh_every=1, obs_prec=1e4, n_iterations=6)
+    assert tr.localize(state_seqs[0][10])
+    assert np.all(np.isfinite(np.asarray(tr.B)))
 
 
 def test_exact_plan_matches_lq_in_deterministic_limit():
     """The exact Gaussian action posterior reduces to the LQ solution when the
     transition is near-deterministic (LQG duality sanity check)."""
-    from jopa.message_passing import infer_actions_exact
     from jopa.blocks import _identity_meta
+    from jopa.message_passing import (
+        infer_actions_exact,
+        infer_actions_exact_numpy,
+        infer_actions_exact_posterior,
+    )
 
     rng = np.random.RandomState(0)
     d, du, H = 3, 2, 6
@@ -404,7 +420,20 @@ def test_exact_plan_matches_lq_in_deterministic_limit():
     prior_u = Gaussian(eta=jnp.zeros(du), lam=reg * pg * jnp.eye(du))
     vague = Gaussian(eta=jnp.zeros(d), lam=jnp.zeros((d, d)))
     goal = Gaussian(eta=pg * jnp.asarray(zg), lam=pg * jnp.eye(d))
-    acts = np.array(infer_actions_exact(prior_x, [vague] * H + [goal], cache, prior_u))
+    observations = [vague] * H + [goal]
+    acts = np.array(infer_actions_exact(prior_x, observations, cache, prior_u))
+    posterior = infer_actions_exact_posterior(
+        prior_x, observations, cache, prior_u)
+    reference = np.array(
+        infer_actions_exact_numpy(prior_x, observations, cache, prior_u))
+    # GPU and LAPACK solve the deliberately ill-conditioned (W=1e6) system
+    # with slightly different elimination kernels.
+    np.testing.assert_allclose(acts, reference, rtol=5e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(posterior.mean), acts, rtol=5e-6, atol=1e-6)
+    covariance = np.asarray(posterior.joint_covariance)
+    assert covariance.shape == (H * du, H * du)
+    assert np.linalg.eigvalsh(covariance).min() > -1e-9
 
     # closed-form LQ: minimise |x_H - zg|^2 + reg |u|^2 under x' = A x + B u
     M = np.zeros((d, du * H))

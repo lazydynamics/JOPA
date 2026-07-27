@@ -10,14 +10,20 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .nn.vae import VAE, LOG_STD_CLIP, load_params
+from .config import (
+    DEFAULT_IMG_SIZE,
+    DEFAULT_N_FRAMES,
+    ENCODER_CHANNELS,
+    EPS_VARIANCE,
+    LOG_STD_CLIP,
+)
+from .nn.vae import VAE, load_params
 
 
 @dataclass
@@ -88,7 +94,7 @@ def r2_score(y_true, y_pred) -> float:
     y_pred = np.asarray(y_pred, dtype=np.float64)
     ss_res = float(np.sum((y_true - y_pred) ** 2))
     ss_tot = float(np.sum((y_true - y_true.mean(axis=0, keepdims=True)) ** 2))
-    if ss_tot <= 1e-12:
+    if ss_tot <= EPS_VARIANCE:
         return float("nan")
     return 1.0 - ss_res / ss_tot
 
@@ -196,7 +202,7 @@ def validate_checkpoint(
         reconstruction_mse=recon_mse,
         latent_linearity_r2=float(linearity_r2),
         one_step_latent_mse=one_step_mse,
-        n_observations=int(len(latents)),
+        n_observations=len(latents),
         latent_dim=int(model.latent_dim),
         n_frames=int(model.n_frames),
         dynamics_source=source,
@@ -218,9 +224,11 @@ def main(argv=None) -> int:
     parser.add_argument("--vae", type=Path, required=True, help="Path to VAE params saved by jopa.nn.vae.save_params.")
     parser.add_argument("--sequence", type=Path, required=True, help="Numpy .npy observation sequence.")
     parser.add_argument("--latent-dim", type=int, required=True)
-    parser.add_argument("--ch", type=int, default=32, help="VAE channel width used when training the checkpoint.")
-    parser.add_argument("--n-frames", type=int, default=1)
-    parser.add_argument("--img-size", type=int, default=28, help="VAE frame size (28 or 64).")
+    parser.add_argument("--ch", type=int, default=ENCODER_CHANNELS,
+                        help="VAE channel width used when training the checkpoint.")
+    parser.add_argument("--n-frames", type=int, default=DEFAULT_N_FRAMES)
+    parser.add_argument("--img-size", type=int, default=DEFAULT_IMG_SIZE,
+                        help="VAE frame size (28 or 64).")
     parser.add_argument("--dynamics", type=Path, help="Optional .npz dynamics with A/B, or trusted pickle with q_a/q_b.")
     parser.add_argument(
         "--trusted-dynamics-pickle",

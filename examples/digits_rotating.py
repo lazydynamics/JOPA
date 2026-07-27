@@ -7,13 +7,14 @@ Matches the RxInfer.jl example:
   https://examples.rxinfer.com/categories/advanced_examples/learning_dynamics_with_vaes/
 """
 import os
+
 import jax.numpy as jnp
 import numpy as np
 
-from jopa.distributions import Gaussian
-from jopa.blocks import JointModel, Block, LearnedLinear, Frozen
-from jopa.nn.vae import VAE, train_vae, save_params, load_params, make_encode_decode
+from jopa.blocks import Block, Frozen, JointModel, LearnedLinear
 from jopa.data import load_mnist, rotating_mnist, rotation_sequence
+from jopa.distributions import Gaussian
+from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = os.path.join(ROOT, "checkpoints")
@@ -21,15 +22,12 @@ OUTPUTS = os.path.join(ROOT, "outputs")
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
 
-# ── 1. Data ────────────────────────────────────────────────────────────────
-# Digits 0, 1, 8 — 10 exemplars each, 36 rotations (10°/step)
 print("Creating rotated MNIST dataset …")
 train_images, train_labels = rotating_mnist(
     n_digits=10, n_rotations=36, digits=(0, 1, 8),
 )
 print(f"  {train_images.shape[0]} training images (10°/step, binarised)")
 
-# ── 2. VAE ─────────────────────────────────────────────────────────────────
 vae_path = os.path.join(CHECKPOINTS, "vae_d4.npz")
 model = VAE(latent_dim=4)
 
@@ -44,14 +42,11 @@ except FileNotFoundError:
 
 vae = make_encode_decode(model, params)
 
-# ── 3. Inference ───────────────────────────────────────────────────────────
-# Build observation sequence: 100 rotated frames of one digit
 n_observed = 100
 n_predicted = 100
-step_deg = 360.0 / n_observed  # 3.6°/step
+step_deg = 360.0 / n_observed
 
 all_imgs, all_labs = load_mnist()
-# Use the 5th digit-8 exemplar
 digit_idx = np.where(all_labs == 8)[0][4]
 base_img = all_imgs[digit_idx]
 
@@ -69,7 +64,6 @@ model = JointModel([block])
 model.learn([{"z": sequence}])
 out = model.smooth({"z": sequence}, n_predict=n_predicted)["z"]
 
-# ── 4. Results ─────────────────────────────────────────────────────────────
 H = block.transition.A
 angle = float(jnp.arctan2(H[1, 0], H[0, 0]) * 180 / jnp.pi)
 det = float(jnp.linalg.det(H))
@@ -78,7 +72,6 @@ print(f"\nLearned transition matrix:\n{H}")
 print(f"Rotation angle per step: {angle:.2f}°  (expected: {step_deg:.2f}°)")
 print(f"Determinant: {det:.4f}  (ideal: 1.0)")
 
-# ── 5. Visualise (optional) ────────────────────────────────────────────────
 try:
     import matplotlib.pyplot as plt
 
@@ -98,7 +91,6 @@ try:
     plt.savefig(os.path.join(OUTPUTS, "rotating_digits_result.png"), dpi=150)
     print(f"Saved {OUTPUTS}/rotating_digits_result.png")
 
-    # Latent trajectory
     means = np.array(out["means"])
     stds = np.sqrt(np.diagonal(np.array(out["covs"]), axis1=-2, axis2=-1))
     d = means.shape[1]

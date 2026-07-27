@@ -1,9 +1,9 @@
 """Closed-loop Agent: sense → filter → plan → act with online relearning."""
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from jopa import Agent, Block, JointModel, LearnedLinear, Frozen, Gaussian
+from jopa import Agent, Block, Frozen, Gaussian, JointModel, LearnedLinear
 
 
 def _msg(mean, prec=1e4):
@@ -36,7 +36,8 @@ def test_agent_reaches_and_holds_double_integrator():
     model = _warm_model(A, B, rng)
 
     agent = Agent(model, horizon=8, forget=0.5, u_clip=None,
-                  action_precision=0.05, goal_precision=200.0)
+                  action_precision=0.05, goal_precision=200.0,
+                  track_uncertainty=True)
     agent.goal(np.array([1.0, 0.0]))
     x = np.array([0.0, 0.0])
     errs = []
@@ -46,6 +47,10 @@ def test_agent_reaches_and_holds_double_integrator():
         errs.append(abs(x[0] - 1.0))
     assert min(errs) < 0.05
     assert np.mean(errs[-10:]) < 0.1          # holds, not just crosses
+    assert agent.last_observation_cov.shape == (2, 2)
+    assert agent.last_belief_cov.shape == (2, 2)
+    assert agent.last_action_cov.shape == (1, 1)
+    assert float(agent.last_action_cov[0, 0]) > 0
 
 
 def test_agent_goal_switch_clears_regime():
@@ -81,3 +86,12 @@ def test_agent_requires_goal_and_learned_control():
                               observe=Frozen(_msg))])
     with pytest.raises(ValueError):
         Agent(fresh)
+
+
+def test_agent_rejects_unknown_goal_schedule():
+    rng = np.random.RandomState(31)
+    A = np.array([[1.0, 0.1], [0.0, 1.0]])
+    B = np.array([[0.0], [0.1]])
+    model = _warm_model(A, B, rng)
+    with pytest.raises(ValueError, match="goal_schedule"):
+        Agent(model, goal_schedule="distance-magic")
