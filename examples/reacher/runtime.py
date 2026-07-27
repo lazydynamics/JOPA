@@ -70,6 +70,33 @@ def latent_subgoal(belief_mean, goal_mean, trust=SUBGOAL_TRUST):
     return belief_mean + trust * delta / distance
 
 
+# The goal is handed over as an image, so show it as one: the target pose is
+# rendered from the same camera and composited under the live frame. The arena is
+# a uniform grey, so the goal's arm is exactly the pixels that differ from the
+# modal colour; draining their colour keeps overlapping arms legible, because
+# only the live arm keeps its hue.
+GHOST_STRENGTH = 0.8
+GHOST_LIFT = 0.45
+ARENA_TOLERANCE = 24.0
+
+
+def ghosted(live, goal_render):
+    """Composite a rendered goal pose under a live frame as a pale double."""
+    goal = np.asarray(goal_render, dtype=np.float32)
+    frame = np.asarray(live, dtype=np.float32)
+    arena = np.median(goal.reshape(-1, 3), axis=0)
+    # Ghost only where the goal's arm is and the live frame's is not: the target
+    # marker sits in both renders, so differencing against the live frame keeps
+    # its colour, and an overlapping live arm stays in front of its own ghost.
+    mask = ((np.abs(goal - arena).sum(-1) > ARENA_TOLERANCE)
+            & (np.abs(goal - frame).sum(-1) > ARENA_TOLERANCE))
+    luminance = (goal @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
+    pale = GHOST_LIFT * arena + (1.0 - GHOST_LIFT) * np.repeat(luminance, 3, -1)
+    out = frame.copy()
+    out[mask] = (1.0 - GHOST_STRENGTH) * out[mask] + GHOST_STRENGTH * pale[mask]
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def _load_bank(directory, sensor_hash, include_rest=False):
     """Encoded replay for local refits.
 

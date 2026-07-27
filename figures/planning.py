@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from style import ACCENT, INK, INK_LIGHT, PAPER, RULE, SLATE, _bare_axes
 
-from examples.reacher.runtime import ReacherLoop
+from examples.reacher.runtime import ReacherLoop, ghosted
 
 
 def collect(seed, steps, stride):
@@ -29,6 +29,7 @@ def collect(seed, steps, stride):
     start_pose, goal_pose = loop.sample_task(seed)
     goal_xy = loop.fingertip_of(goal_pose)
     loop.reset(goal_pose, goal_xy)
+    goal_render = loop.display_frame()
     goal_frame = loop.sensor_frame()
     agent = loop.agent_for(goal_frame, track_uncertainty=True)
     loop.reset(start_pose, goal_xy)
@@ -39,7 +40,7 @@ def collect(seed, steps, stride):
     for step in range(steps):
         action = agent.step(np.stack(history[-4:]))
         plan = agent.last_plan
-        image = loop.display_frame()
+        image = ghosted(loop.display_frame(), goal_render)
         loop.act(action)
         history.append(loop.sensor_frame())
         error.append(float(np.linalg.norm(loop.fingertip() - goal_xy) * 100.0))
