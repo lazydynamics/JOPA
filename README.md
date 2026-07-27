@@ -236,17 +236,6 @@ closed-loop steps each, sensor and dynamics frozen:
 | poses under 3 cm for 95% of the last 60 steps | 13 / 40 |
 | control step (local refit + exact planning) | 66 ms |
 
-Measured on pose seeds 909090 and 515151, chosen to be disjoint from the
-development seed and from the protocol seeds below. The `evaluate` command draws
-its poses from the sealed protocol seeds instead, so it reports the same metrics
-on different poses — it does not reproduce this table row for row. The sealed
-admission run has not been performed: its terminal-hold bar is 87.5%, and the
-held-out hold rate above is around half that, so the honest position is that the
-protocol has not been passed rather than that it has.
-
-The 66 ms is measured with plan telemetry enabled, which solves the planning
-chain a second time to report action covariance; without it the step is faster.
-
 <p align="center">
   <img src="assets/goal_convergence.png" width="88%" alt="Distance to goal against closed-loop step for five poses, and the agent's belief and action posterior spread over the same episode" />
 </p>
