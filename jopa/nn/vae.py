@@ -181,7 +181,7 @@ def train_vae(
         rng, perm_rng = jax.random.split(rng)
         idx = jax.random.permutation(perm_rng, n)
         imgs = images[idx]
-        beta_t = min(beta, beta_start + (beta - beta_start) * (epoch - 1) / beta_warmup)
+        beta_t = min(beta, beta_start + (beta - beta_start) * (epoch - 1) / max(beta_warmup, 1))
         losses = []
         for i in range(0, n, batch_size):
             rng, z_rng = jax.random.split(rng)

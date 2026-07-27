@@ -9,7 +9,7 @@ pose, exactly as the original babbling episode did. No simulator state is
 stored.
 
 Usage:
-    MUJOCO_GL=egl python examples/reacher_collect_babble.py \
+    MUJOCO_GL=egl python -m examples.reacher.collect \
         --out outputs/gpu_run/ck_babble2.pkl --trajectories 900
 """
 from __future__ import annotations
@@ -114,7 +114,10 @@ def main(argv=None):
     def frame():
         world.geom_rgba[target_id, 3] = 0.0
         renderer.update_scene(data, camera=camera)
-        return renderer.render().mean(2).astype(np.uint8)
+        # Round rather than truncate: runtime.py keeps the channel mean in
+        # float32, so flooring here would collect systematically darker frames
+        # than the sensor sees in the loop.
+        return np.rint(renderer.render().mean(2)).astype(np.uint8)
 
     def act(u):
         data.ctrl[:] = np.clip(u, -1, 1)

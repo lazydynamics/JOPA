@@ -99,17 +99,29 @@ class ReacherLoop:
             n_frames=N_FRAMES, img_size=IMG_SIZE,
             motion_hidden_dim=MOTION_HIDDEN_DIM)
         params = load_params(self.sensor, directory / "pose_motion_sensor.msgpack")
-        with (directory / "conjugate_dynamics_bootstrap.pkl").open("rb") as handle:
+        # Prefer the artifacts the audit signed off on; fall back to the
+        # bootstrap pair only when a full run has not produced them, so the
+        # loop cannot silently deploy something the audit never saw.
+        audited = directory / "conjugate_dynamics.pkl"
+        dynamics = (audited if audited.exists()
+                    else directory / "conjugate_dynamics_bootstrap.pkl")
+        with dynamics.open("rb") as handle:
             self.transition = pickle.load(handle)
 
-        archive = np.load(glob.glob(
-            str(directory / f"encodings_calibration_{sensor_hash}*.npz"))[0])
-        count = json.loads(str(archive["metadata"]))["trajectories"]
-        encoded = [{key: np.asarray(archive[f"{key}_{i:05d}"])
-                    for key in ("means", "log_stds", "controls")}
-                   for i in range(count)]
-        innovations, base_logs = pixel_action_innovations(self.transition, encoded)
-        offsets = PoseMotionObservation.calibration_offsets(innovations, base_logs)
+        recorded = (manifest.get("calibration") or {}).get("log_std_offsets")
+        if recorded is not None:
+            offsets = np.asarray(recorded, dtype=np.float32)
+        else:
+            archive = np.load(glob.glob(
+                str(directory / f"encodings_calibration_{sensor_hash}*.npz"))[0])
+            count = json.loads(str(archive["metadata"]))["trajectories"]
+            encoded = [{key: np.asarray(archive[f"{key}_{i:05d}"])
+                        for key in ("means", "log_stds", "controls")}
+                       for i in range(count)]
+            innovations, base_logs = pixel_action_innovations(
+                self.transition, encoded)
+            offsets = PoseMotionObservation.calibration_offsets(
+                innovations, base_logs)
         self.observation = PoseMotionObservation(
             self.sensor, params, log_std_offsets=offsets)
         self.background = np.load(directory / "background.npy", allow_pickle=False)

@@ -78,9 +78,9 @@ def load_params(model, path: str | Path) -> dict:
     with open(path, "rb") as f:
         header = f.read(CHECKPOINT_HEADER_BYTES)
     if header.startswith(b"PK"):
-        data = np.load(path)
-        leaves = jax.tree.leaves(template)
-        flat = [jnp.array(data[f"p{i}"]) for i in range(len(leaves))]
+        with np.load(path) as data:
+            leaves = jax.tree.leaves(template)
+            flat = [jnp.array(data[f"p{i}"]) for i in range(len(leaves))]
         loaded = jax.tree.unflatten(jax.tree.structure(template), flat)
         return _validate_checkpoint_tree(template, loaded, path)
     with open(path, "rb") as f:

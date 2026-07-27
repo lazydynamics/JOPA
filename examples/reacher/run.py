@@ -1150,10 +1150,10 @@ def main(argv=None):
     print(
         f"jax backend: {jax.default_backend()}  "
         f"devices: {jax.devices()}", flush=True)
-    if args.frames != 4:
+    if N_FRAMES != 4:
         raise ValueError(
             "the canonical structured sensor requires exactly four frames")
-    if args.pose_dim != 4 or args.motion_dim != 2:
+    if POSE_DIM != 4 or MOTION_DIM != 2:
         raise ValueError(
             "the canonical state is exactly pose[4] + motion[2]")
     if args.mode == "train":

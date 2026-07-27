@@ -25,7 +25,7 @@ Minimal loop::
 import jax.numpy as jnp
 import numpy as np
 
-from .blocks import _identity_meta
+from .graph import _identity_meta
 from .config import (
     AGENT_ACTION_PRECISION,
     AGENT_FORGET,
@@ -339,7 +339,7 @@ class Agent:
             win = np.stack(self._means[-self.window:])
             if float(win.std(axis=0).max()) > self.min_excitation:
                 self._tr.learn([self._msgs[-self.window:]],
-                               [self._acts[-(self.window - 1):]])
+                               [self._acts[-(self.window - 1):] if self.window > 1 else []])
                 self._tr.remember(forget=self.forget)
                 self._cache = CTCache(self._tr.q_a, self._tr.q_W, self._meta,
                                       self._tr.q_b)
@@ -351,7 +351,7 @@ class Agent:
             # (diffuse) so the model's phantom equilibrium at the goal is
             # absorbed into the learned offset instead of being fought.
             self._tr.learn([self._msgs[-self.window:]],
-                           [self._acts[-(self.window - 1):]])
+                           [self._acts[-(self.window - 1):] if self.window > 1 else []])
             self._tr.remember(forget=AGENT_HOLD_FORGET,
                               diffuse=AGENT_HOLD_DRIFT_DIFFUSION)
             self._cache = CTCache(self._tr.q_a, self._tr.q_W, self._meta,
@@ -381,6 +381,10 @@ class Agent:
             plan_prior, obs_chain, plan_cache,
             self._augment_prior_u())
         if self.track_uncertainty:
+            # Actions deliberately come from the mean-only sweep above: the
+            # dense posterior agrees to ~1e-12, but this loop amplifies, and
+            # the published metrics were measured against this source. Folding
+            # the two solves into one belongs with the next re-baseline.
             self.last_plan = infer_actions_exact_posterior(
                 plan_prior, obs_chain, plan_cache,
                 self._augment_prior_u())
