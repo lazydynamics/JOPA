@@ -137,6 +137,26 @@ When the future carries no observation, the forward–backward sweep that smooth
 the past predicts it — inference and prediction are one operation on different
 parts of the chain.
 
+### Where the transition rules come from
+
+Most of the work happens in one node: `ContinuousTransition` in
+[`jopa/nodes/transition.py`](jopa/nodes/transition.py), the structured VMP rules
+for $y \sim \mathcal{N}(Ax + Bu, W^{-1})$ when $x$ and $y$ are *both* uncertain.
+That caveat is the entire difficulty. Cut the posterior as $q(y)\,q(x)$ and the
+transition matrix you learn is attenuated toward zero — errors-in-variables — so
+the rules have to carry $\mathbb{E}[A M A^\top]$ and the parameter-uncertainty
+contractions you see in the code. Keeping $q(y,x)$ joint is what makes it
+possible to learn dynamics from latents that were themselves inferred.
+
+Everything else here is that node asked a different question. Filtering,
+smoothing and prediction are its forward and backward messages; learning
+$q(A,B,W)$ is its parameter messages; action inference is either a message from
+the same node (`ct_message_u`) or a Gaussian chain assembled from the same
+cached posterior expectations.
+
+The rules themselves are not new. They were derived and integrated into
+[RxInfer](https://rxinfer.com) some time ago; the write-up remains unpublished.
+
 ## The agent loop
 
 ```python
