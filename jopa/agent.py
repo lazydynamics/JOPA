@@ -25,7 +25,6 @@ Minimal loop::
 import jax.numpy as jnp
 import numpy as np
 
-from .graph import _identity_meta
 from .config import (
     AGENT_ACTION_PRECISION,
     AGENT_FORGET,
@@ -56,6 +55,7 @@ from .distributions import (
     gaussian_mean,
     gaussian_mean_cov,
 )
+from .graph import _identity_meta
 from .message_passing import (
     infer_actions_exact,
     infer_actions_exact_posterior,
@@ -381,10 +381,8 @@ class Agent:
             plan_prior, obs_chain, plan_cache,
             self._augment_prior_u())
         if self.track_uncertainty:
-            # Actions deliberately come from the mean-only sweep above: the
-            # dense posterior agrees to ~1e-12, but this loop amplifies, and
-            # the published metrics were measured against this source. Folding
-            # the two solves into one belongs with the next re-baseline.
+            # Actions stay on the mean-only sweep above: the dense posterior
+            # agrees to ~1e-12, but this loop amplifies round-off.
             self.last_plan = infer_actions_exact_posterior(
                 plan_prior, obs_chain, plan_cache,
                 self._augment_prior_u())

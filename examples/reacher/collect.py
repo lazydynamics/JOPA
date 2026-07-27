@@ -114,9 +114,7 @@ def main(argv=None):
     def frame():
         world.geom_rgba[target_id, 3] = 0.0
         renderer.update_scene(data, camera=camera)
-        # Round rather than truncate: runtime.py keeps the channel mean in
-        # float32, so flooring here would collect systematically darker frames
-        # than the sensor sees in the loop.
+        # Round, not truncate: runtime.py keeps the mean in float32.
         return np.rint(renderer.render().mean(2)).astype(np.uint8)
 
     def act(u):
