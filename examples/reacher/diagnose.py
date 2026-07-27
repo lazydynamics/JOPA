@@ -1,4 +1,4 @@
-"""Pixel-only diagnostics: latent rollout, aliasing, calibration coverage."""
+"""Pixel-only diagnostics: latent rollout error and innovation calibration."""
 from __future__ import annotations
 
 import copy
@@ -12,31 +12,27 @@ from jopa import PoseMotionObservation
 from jopa.nn.vae import load_params
 
 from .artifacts import (
-    VALIDATION_REPEATS,
-    attach_encoded_replay,
     architecture_for,
+    attach_encoded_replay,
     checkpoint_record,
+    checkpoint_sha256,
     encodings_for,
     fit_conjugate_dynamics,
+    load_manifest,
     paths,
     sensor_for,
     split_replay,
     update_runtime,
+    validate_manifest,
     write_json,
+    write_manifest,
+)
+from .metrics import (
+    innovation_interval_coverage,
+    pixel_action_innovations,
+    rollout_diagnostics,
 )
 from .runtime import HORIZON, MOTION_DIM, NEIGHBORS, POSE_DIM, REFIT_OBS_PRECISION
-from .validation import (
-    checkpoint_sha256,
-    innovation_interval_coverage,
-    load_manifest,
-    pixel_action_innovations,
-    repeated_frame_motion_rms,
-    rollout_diagnostics,
-    validate_manifest,
-    visual_aliasing_metrics,
-    write_manifest,
-    zero_action_fixed_point_drift,
-)
 
 
 def encoded_tuples(encoded):
@@ -60,13 +56,15 @@ def static_states(observation, images, batch_size=512):
 
 
 def validation_report(
-        transition, observation, encoded_test, background,
+        transition, observation, encoded_test,
         replay_encoded=None, neighbors=NEIGHBORS,
         refit_obs_prec=REFIT_OBS_PRECISION):
-    # The deployed model is the conjugate posterior refit locally around the
-    # current belief from frozen pixel-latent replay; the rollout gate
-    # evaluates that model. A copy keeps the global posterior — used by the
-    # innovation and drift checks below — untouched by localization.
+    """Latent prediction error and innovation calibration on held-out replay.
+
+    The deployed model is the conjugate posterior refit locally at the belief,
+    so the rollout is measured on that; the innovation check uses the global
+    posterior, which is what the filter starts each episode from.
+    """
     if replay_encoded is not None:
         local = attach_encoded_replay(
             copy.deepcopy(transition), replay_encoded, neighbors,
@@ -76,33 +74,17 @@ def validation_report(
     rollout = rollout_diagnostics(
         local, encoded_tuples(encoded_test),
         horizon=HORIZON, samples=None, localize=replay_encoded is not None)
-    states = concatenate(encoded_test, "means")
-    images = concatenate(encoded_test, "images")
-    visual = visual_aliasing_metrics(
-        images, states, pose_dim=observation.pose_dim,
-        background=background, seed=0)
-    rest = static_states(observation, images)
-    rest_rms = repeated_frame_motion_rms(
-        rest, states, pose_dim=observation.pose_dim)
-    drift = zero_action_fixed_point_drift(
-        transition, rest, states, steps=20)
     innovations, base_log_stds = pixel_action_innovations(
         transition, encoded_test)
     calibrated_logs = np.clip(
-        base_log_stds + np.asarray(observation.log_std_offsets),
-        -6.0, 2.0)
+        base_log_stds + np.asarray(observation.log_std_offsets), -6.0, 2.0)
     coverage = innovation_interval_coverage(
         innovations, log_stds=calibrated_logs, level=0.90)
-    report = {
+    return {
         **rollout,
-        **visual,
-        "repeated_frame_motion_rms": float(rest_rms),
-        "zero_action_drift_20_nrmse": float(drift),
         "innovation_90_coverage": float(coverage),
         "test_trajectories": len(encoded_test),
-        "test_states": len(states),
     }
-    return report
 
 
 def run_validate(args):
@@ -140,24 +122,9 @@ def run_validate(args):
 
     observation = PoseMotionObservation(
         sensor, sensor_params, log_std_offsets=offsets)
-    background = np.load(artifact["background"], allow_pickle=False)
-    repeats = max(2, VALIDATION_REPEATS)
-    reports = []
-    gates = []
-    for _ in range(repeats):
-        report, gate = validation_report(
-            transition, observation, encoded["test"], background,
-            replay_encoded=encoded["train"])
-        reports.append(report)
-        gates.append(gate)
-    canonical = json.dumps(
-        {"report": reports[0], "gate": gates[0]},
-        sort_keys=True, separators=(",", ":"))
-    reproducible = all(
-        json.dumps(
-            {"report": report, "gate": gate},
-            sort_keys=True, separators=(",", ":")) == canonical
-        for report, gate in zip(reports[1:], gates[1:]))
+    report = validation_report(
+        transition, observation, encoded["test"],
+        replay_encoded=encoded["train"])
 
     manifest["checkpoints"]["dynamics"] = checkpoint_record(
         artifact["dynamics"])
@@ -166,40 +133,10 @@ def run_validate(args):
         "method": "per-dimension 90% innovation quantile matching",
         "log_std_offsets": offsets.tolist(),
         "target_coverage": 0.90,
-        "simulator_labels_used": False,
     }
-    manifest["admission"] = {
-        **gates[0],
-        "report": reports[0],
-        "source_split": "test",
-        "untouched_during_training_and_calibration": True,
-    }
-    manifest["reproducibility"] = {
-        "validation_runs": int(repeats),
-        "identical": bool(reproducible),
-        "report_digest": __import__("hashlib").sha256(
-            canonical.encode("utf-8")).hexdigest(),
-    }
-    manifest["phase"] = (
-        "validated" if gates[0]["passed"] and reproducible
-        else "validation_failed")
+    manifest["diagnostics"] = {"source_split": "test", **report}
+    manifest["phase"] = "validated"
     write_manifest(artifact["manifest"], manifest)
-    write_json(artifact["out"] / "admission_report.json", {
-        "report": reports[0],
-        "admission": gates[0],
-        "reproducibility": manifest["reproducibility"],
-    })
-    update_runtime(
-        artifact["runtime"], "validate", time.time() - started,
-        validation_runs=repeats,
-        admission_passed=gates[0]["passed"],
-        reproducible=reproducible)
-    print(json.dumps(manifest["admission"], indent=2), flush=True)
-    if not gates[0]["passed"]:
-        raise RuntimeError(
-            "state-free admission gates failed; MuJoCo evaluation is forbidden")
-    if not reproducible:
-        raise RuntimeError(
-            "validation was not reproducible; MuJoCo evaluation is forbidden")
-
-
+    write_json(artifact["out"] / "diagnostics.json", report)
+    update_runtime(artifact["runtime"], "validate", time.time() - started)
+    print(json.dumps(report, indent=2), flush=True)

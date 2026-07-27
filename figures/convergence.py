@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from style import BRICK, INK, INK_LIGHT, PAPER, RULE, SLATE, _bare_axes
+from style import BRICK, INK, INK_LIGHT, PAPER, SLATE, _bare_axes
 
 from examples.reacher.runtime import ReacherLoop
 

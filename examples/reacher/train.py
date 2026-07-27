@@ -14,17 +14,21 @@ from jopa.nn.vae import load_params, save_params, train_pose_motion_vae
 from .artifacts import (
     PREDICTION_WEIGHT,
     SENSOR_SEED,
+    ManifestError,
     base_manifest,
     cache_path,
     checkpoint_record,
+    checkpoint_sha256,
     encodings_for,
     fit_conjugate_dynamics,
     json_value,
+    load_manifest,
     paths,
     sensor_for,
     split_replay,
     update_runtime,
     write_json,
+    write_manifest,
 )
 from .runtime import (
     IMG_SIZE,
@@ -32,12 +36,6 @@ from .runtime import (
     MOTION_HIDDEN_DIM,
     N_FRAMES,
     POSE_DIM,
-)
-from .validation import (
-    ManifestError,
-    checkpoint_sha256,
-    load_manifest,
-    write_manifest,
 )
 
 

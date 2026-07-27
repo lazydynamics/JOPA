@@ -1,17 +1,10 @@
-import importlib.util
-from pathlib import Path
-
 import numpy as np
 
-from jopa.blocks import LearnedLinear
-
-_PATH = Path(__file__).parents[1] / "examples" / "reacher" / "validation.py"
-_SPEC = importlib.util.spec_from_file_location("reacher_pixel_validation", _PATH)
-validation = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(validation)
+from examples.reacher import metrics
+from jopa import LearnedLinear
 
 
-def test_state_free_rollout_gate_accepts_identified_linear_system():
+def test_rollout_diagnostics_on_identified_linear_system():
     rng = np.random.RandomState(7)
     A = np.array([[1.0, 0.08], [0.0, 0.96]])
     B = np.array([[0.01], [0.15]])
@@ -30,6 +23,6 @@ def test_state_free_rollout_gate_accepts_identified_linear_system():
     model.learn_observed(
         [x for x, _ in encoded[:8]], [u for _, u in encoded[:8]],
         obs_prec=1e4)
-    report = validation.rollout_diagnostics(model, encoded[8:], samples=64)
+    report = metrics.rollout_diagnostics(model, encoded[8:], samples=64)
     assert report["6_step_nrmse"] < 0.5
     assert report["mean_B_signal_to_std"] > 1.0

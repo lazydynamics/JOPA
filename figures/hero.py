@@ -172,7 +172,7 @@ def build(seed=0):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", default="docs/hero.gif")
+    parser.add_argument("--out", default="assets/hero.gif")
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dpi", type=int, default=110)

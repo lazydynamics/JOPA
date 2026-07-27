@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import csv
 import json
 import pickle
 import time
@@ -14,11 +13,13 @@ from jopa.distributions import gaussian_mean
 from jopa.nn.vae import load_params
 
 from .artifacts import (
+    ManifestError,
     architecture_for,
     attach_encoded_replay,
     paths,
     sensor_for,
     update_runtime,
+    validate_manifest,
     write_json,
 )
 from .runtime import (
@@ -40,7 +41,6 @@ from .runtime import (
     action_precision,
     latent_subgoal,
 )
-from .validation import ManifestError, validate_manifest
 
 # A hold counts when the mean fingertip error over the final 20 steps is under
 # 3 cm; a pose is settled when it stays there for 95% of the final 60.
@@ -76,92 +76,6 @@ def terminal_metrics(errors, window, threshold):
         "longest_run_below_3cm": longest_run(errors, threshold),
         "terminal_success": bool(terminal < threshold),
     }
-
-
-def save_trace_plot(output, label, trace, metrics, threshold):
-    import matplotlib.pyplot as plt
-
-    steps = np.arange(len(trace["error_cm"]))
-    figure, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
-    axes[0].plot(steps, trace["error_cm"], color="tab:red")
-    axes[0].axhline(threshold, color="black", linestyle="--")
-    axes[0].set_ylabel("error (cm)")
-    axes[0].set_title(
-        f"{label}: terminal 20-step "
-        f"{metrics['terminal_20_step_cm']:.2f} cm")
-    axes[1].plot(steps, trace["control_norm"], label="control norm")
-    axes[1].plot(steps, trace["action_std"], label="action posterior std")
-    axes[1].set_ylabel("control")
-    axes[1].legend()
-    axes[2].plot(
-        steps, trace["observation_std"], label="observation std")
-    axes[2].plot(steps, trace["belief_std"], label="belief std")
-    axes[2].plot(steps, trace["B_std"], label="q(B) std")
-    axes[2].set_ylabel("uncertainty")
-    axes[2].set_xlabel("closed-loop step")
-    axes[2].legend()
-    figure.tight_layout()
-    figure.savefig(output / f"{label}_trace.png", dpi=160)
-    plt.close(figure)
-
-
-def write_evaluation_table(output, rows):
-    fields = [
-        "phase", "pose", "minimum_cm", "best_20_step_cm",
-        "terminal_20_step_cm", "longest_run_below_3cm",
-        "terminal_success",
-    ]
-    with (output / "evaluation.csv").open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows([
-            {name: row[name] for name in fields} for row in rows])
-    lines = [
-        "| phase | pose | minimum cm | best 20-step cm | "
-        "terminal 20-step cm | longest <3 cm | pass |",
-        "|---|---:|---:|---:|---:|---:|:---:|",
-    ]
-    for row in rows:
-        lines.append(
-            f"| {row['phase']} | {row['pose']} | "
-            f"{row['minimum_cm']:.2f} | "
-            f"{row['best_20_step_cm']:.2f} | "
-            f"{row['terminal_20_step_cm']:.2f} | "
-            f"{row['longest_run_below_3cm']} | "
-            f"{'yes' if row['terminal_success'] else 'no'} |")
-    (output / "evaluation.md").write_text("\n".join(lines) + "\n")
-
-
-def save_montage(output, runs, fps):
-    import warnings
-
-    import imageio.v2 as imageio
-    from PIL import Image, ImageDraw
-
-    if not runs:
-        return
-    length = min(len(run["video"]) for run in runs)
-    tile_size = runs[0]["video"][0].shape[0] * 3
-    montage = []
-    for step in range(length):
-        canvas = Image.new("RGB", (3 * tile_size, 3 * tile_size), "white")
-        for index, run in enumerate(runs[:9]):
-            image = Image.fromarray(run["video"][step]).resize(
-                (tile_size, tile_size), Image.Resampling.NEAREST)
-            draw = ImageDraw.Draw(image)
-            draw.rectangle((0, 0, tile_size, 17), fill="white")
-            draw.text(
-                (2, 2),
-                f"{run['label']}  {run['trace']['error_cm'][step]:.2f} cm",
-                fill="black")
-            canvas.paste(
-                image,
-                ((index % 3) * tile_size, (index // 3) * tile_size))
-        montage.append(np.asarray(canvas))
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="os.fork.*")
-        imageio.mimsave(
-            output / "gate_b_montage.mp4", montage, fps=fps)
 
 
 def run_evaluate(args):
@@ -356,8 +270,6 @@ def run_evaluate(args):
         })
         np.savez_compressed(
             artifact["out"] / f"{label}.npz", **trace)
-        save_trace_plot(
-            artifact["out"], label, trace, metrics, HOLD_THRESHOLD_CM)
         return {
             "label": label,
             "metrics": metrics,
@@ -394,7 +306,6 @@ def run_evaluate(args):
             for row in rows),
         "settled": sum(row["settled"] for row in rows),
     }
-    write_evaluation_table(artifact["out"], rows)
     write_json(
         artifact["out"] / f"survey_{args.pose_seed}.json",
         {"summary": summary, "rows": rows})

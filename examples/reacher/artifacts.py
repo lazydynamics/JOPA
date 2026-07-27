@@ -27,12 +27,6 @@ from .runtime import (
     REFIT_OBS_PRECISION,
     SUBGOAL_TRUST,
 )
-from .validation import (
-    MANIFEST_SCHEMA,
-    ManifestError,
-    checkpoint_sha256,
-    split_trajectories,
-)
 
 REPLAY_PATTERN = "ck_*.pkl"
 PREDICTION_WEIGHT = 10.0
@@ -55,6 +49,150 @@ SURVEY_POSES = 20
 DEFAULT_POSE_SEED = 515151
 MONTAGE_FPS = 25
 
+
+
+MANIFEST_SCHEMA = "jopa-pose-motion-reacher-v1"
+
+
+class ManifestError(RuntimeError):
+    """A manifest is missing, incompatible, stale, or failed."""
+
+
+def split_trajectories(
+        trajectories, seed=41, ratios=(0.8, 0.1, 0.1)):
+    """Return deterministic, trajectory-disjoint train/calibration/test data."""
+    if len(ratios) != 3 or any(value <= 0 for value in ratios):
+        raise ValueError("ratios must contain three positive values")
+    if not np.isclose(sum(ratios), 1.0):
+        raise ValueError("split ratios must sum to one")
+    count = len(trajectories)
+    if count < 3:
+        raise ValueError("at least three trajectories are required")
+    order = np.random.RandomState(seed).permutation(count)
+    calibration_count = max(1, int(round(ratios[1] * count)))
+    test_count = max(1, int(round(ratios[2] * count)))
+    if calibration_count + test_count >= count:
+        calibration_count = test_count = 1
+    train_count = count - calibration_count - test_count
+    indices = {
+        "train": order[:train_count].astype(int).tolist(),
+        "calibration": order[
+            train_count:train_count + calibration_count].astype(int).tolist(),
+        "test": order[train_count + calibration_count:].astype(int).tolist(),
+    }
+    sets = {
+        name: [trajectories[index] for index in selected]
+        for name, selected in indices.items()
+    }
+    return {
+        **sets,
+        "indices": indices,
+        "seed": int(seed),
+        "ratios": [float(value) for value in ratios],
+    }
+
+
+trajectory_split = split_trajectories
+
+
+def checkpoint_sha256(path, chunk_size=1024 * 1024):
+    import hashlib
+
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(chunk_size)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_manifest(path, manifest):
+    """Atomically persist a JSON manifest."""
+    import json
+    import os
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def load_manifest(path):
+    import json
+
+    path = Path(path)
+    if not path.is_file():
+        raise ManifestError(f"manifest does not exist: {path}")
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ManifestError(f"could not read manifest {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise ManifestError("manifest root must be a JSON object")
+    return value
+
+
+def validate_manifest(
+        manifest_or_path, *, expected_architecture=None,
+        checkpoint_paths=None):
+    """Refuse a stale architecture, hash, or split."""
+    manifest = (
+        load_manifest(manifest_or_path)
+        if not isinstance(manifest_or_path, dict)
+        else manifest_or_path)
+    errors = []
+    if manifest.get("schema") != MANIFEST_SCHEMA:
+        errors.append("unsupported or missing schema")
+    split = manifest.get("split", {})
+    if not isinstance(split.get("seed"), int):
+        errors.append("missing split seed")
+    indices = split.get("indices", {})
+    if set(indices) != {"train", "calibration", "test"}:
+        errors.append("missing trajectory split indices")
+    else:
+        flattened = [
+            item for name in ("train", "calibration", "test")
+            for item in indices[name]]
+        if len(flattened) != len(set(flattened)):
+            errors.append("trajectory splits overlap")
+    architecture = manifest.get("architecture")
+    if expected_architecture is not None:
+        if architecture != expected_architecture:
+            errors.append("sensor architecture is incompatible")
+    elif not isinstance(architecture, dict):
+        errors.append("missing sensor architecture")
+
+    checkpoints = manifest.get("checkpoints", {})
+    paths = {} if checkpoint_paths is None else checkpoint_paths
+    for name, record in checkpoints.items():
+        if not isinstance(record, dict) or "sha256" not in record:
+            errors.append(f"checkpoint {name} has no hash")
+            continue
+        candidate = paths.get(name, record.get("path"))
+        if candidate is None:
+            errors.append(f"checkpoint {name} has no path")
+            continue
+        try:
+            actual = checkpoint_sha256(candidate)
+        except OSError as error:
+            errors.append(f"checkpoint {name} unavailable: {error}")
+            continue
+        if actual != record["sha256"]:
+            errors.append(f"checkpoint {name} hash mismatch")
+    for required in ("sensor", "dynamics"):
+        if required not in checkpoints:
+            errors.append(f"missing {required} checkpoint")
+
+    if errors:
+        raise ManifestError("; ".join(errors))
+    return manifest
 
 
 def paths(args):
