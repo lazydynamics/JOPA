@@ -222,7 +222,8 @@ no simulator state. The goal is an image of the arm at the target.
 ```bash
 python -m examples.reacher.run train    --data outputs/gpu_run   # sensor + q(A,B,W)
 python -m examples.reacher.run validate --data outputs/gpu_run   # pixel-only diagnostics
-MUJOCO_GL=egl python -m examples.reacher.run evaluate            # closed loop
+MUJOCO_GL=egl python -m examples.reacher.run evaluate \
+    --pose-seed 515151 --poses 20                                # closed loop
 ```
 
 40 poses, two seeds disjoint from every training and tuning decision, 240
@@ -231,9 +232,9 @@ closed-loop steps each, sensor and dynamics frozen:
 | | result |
 |---|---|
 | poses reaching within 1 cm | 40 / 40 |
-| poses within 3 cm over the last 20 steps (mean) | 25 / 40 |
-| poses whose worst error in the last 20 steps is under 3 cm | 20 / 40 |
-| poses under 3 cm for 95% of the last 60 steps | 13 / 40 |
+| poses within 3 cm over the last 20 steps (mean) | 30 / 40 |
+| poses whose worst error in the last 20 steps is under 3 cm | 24 / 40 |
+| poses under 3 cm for 95% of the last 60 steps | 14 / 40 |
 | control step (local refit + exact planning) | 66 ms |
 
 <p align="center">
