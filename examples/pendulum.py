@@ -24,9 +24,9 @@ import pickle
 import jax.numpy as jnp
 import numpy as np
 
+from examples.pendulum_env import SimplePendulum
 from jopa.blocks import Block, JointModel, LearnedLinear, LearnedVAE
 from jopa.distributions import gaussian_mean, near_identity_prior
-from jopa.envs import SimplePendulum
 from jopa.nn.vae import VAE, load_params, save_params, train_vae
 
 _p = argparse.ArgumentParser(description=__doc__,

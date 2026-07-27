@@ -9,8 +9,8 @@ import os
 import jax.numpy as jnp
 import numpy as np
 
+from examples.digits_data import load_mnist, make_controlled_sequence, rotating_mnist
 from jopa.blocks import Block, Frozen, JointModel, LearnedLinear
-from jopa.data import load_mnist, make_controlled_sequence, rotating_mnist
 from jopa.distributions import Gaussian, near_identity_prior
 from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 

@@ -2,7 +2,7 @@
 import numpy as np
 from PIL import Image, ImageDraw
 
-from ..config import DEFAULT_IMG_SIZE
+from jopa.config import DEFAULT_IMG_SIZE
 
 # Angular speed bound (rad/s): keeps the explicit Euler integration stable at
 # the default dt and keeps the bob inside the rendered frame.

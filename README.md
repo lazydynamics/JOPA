@@ -200,9 +200,9 @@ no simulator state. The goal is an image of the arm at the target.
 </p>
 
 ```bash
-python examples/reacher_pixels.py train    --data outputs/gpu_run   # sensor + q(A,B,W)
-python examples/reacher_pixels.py validate --data outputs/gpu_run   # state-free gates
-MUJOCO_GL=egl python examples/reacher_pixels.py evaluate            # closed loop
+python -m examples.reacher.run train    --data outputs/gpu_run   # sensor + q(A,B,W)
+python -m examples.reacher.run validate --data outputs/gpu_run   # state-free gates
+MUJOCO_GL=egl python -m examples.reacher.run evaluate            # closed loop
 ```
 
 40 poses, two seeds disjoint from every training and tuning decision, 240
@@ -334,10 +334,10 @@ choice.
 
 | Command | Needs | Time |
 |---|---|---|
-| `python examples/digits_rotating.py` | CPU | ~15 s warm, ~4 min cold (trains a small VAE) |
-| `python examples/digits_controlled.py` | CPU | ~1 min |
-| `python examples/digits_end_to_end.py` | CPU | ~5 min (variational EM) |
-| `python examples/pendulum.py` | CPU | ~30 min first run, ~10 s after (EM result is cached) |
+| `python -m examples.digits_rotating` | CPU | ~15 s warm, ~4 min cold (trains a small VAE) |
+| `python -m examples.digits_controlled` | CPU | ~1 min |
+| `python -m examples.digits_end_to_end` | CPU | ~5 min (variational EM) |
+| `python -m examples.pendulum` | CPU | ~30 min first run, ~10 s after (EM result is cached) |
 | `python figures/hero.py --out assets/hero.gif` | CPU | ~2 min |
 | `MUJOCO_GL=egl python figures/planning.py` | CPU + MuJoCo | ~3 min |
 | `python -m examples.reacher.run train --data outputs/gpu_run` | **GPU** | ~2 h |

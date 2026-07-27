@@ -9,8 +9,8 @@ import os
 import jax.numpy as jnp
 import numpy as np
 
+from examples.digits_data import load_mnist, rotating_mnist, rotation_sequence
 from jopa.blocks import Block, Frozen, JointModel, LearnedLinear, LearnedVAE
-from jopa.data import load_mnist, rotating_mnist, rotation_sequence
 from jopa.distributions import Gaussian
 from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 
