@@ -1,7 +1,8 @@
-import numpy as np
+import pickle
+
 import jax
 import jax.numpy as jnp
-import pickle
+import numpy as np
 import pytest
 
 from jopa.distributions import Gaussian

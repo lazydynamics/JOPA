@@ -1,20 +1,37 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 *.egg-info/
 .venv/
-.claude/
 dist/
 build/
+.pytest_cache/
+
+# Tooling / scratch
+.claude/
 .marimo/
 __marimo__/
-
-# Generated outputs and model weights
-outputs/*.png
-outputs/*.gif
-outputs/*.mp4
-outputs/*.html
-checkpoints/*.npz
-checkpoints/*.pkl
 scripts/
 .DS_Store
+
+# Generated run artifacts and model weights.
+# Ignore the contents but keep the directories themselves in the tree.
+outputs/*
+!outputs/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+
+# Model weights / replay buffers are large and are never committed,
+# wherever they are written.
+*.msgpack
+*.npz
+*.pkl
+
 docs/index.html
+previews/
+figures/__pycache__/
+
+# internal working notes, never committed
+post.md
+issues.md

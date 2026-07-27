@@ -1,21 +1,33 @@
 """Semantic tests for the JOPA API: distributions, message passing, blocks, planning."""
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from jopa.distributions import (
-    Gaussian, Wishart, gaussian_prior,
-    combine_gaussians, gaussian_mean, gaussian_mean_cov, vague_gaussian,
-)
-from jopa.message_passing import forward_backward, compute_marginals
-from jopa.nodes.transition import CTMeta, CTCache
 from jopa.blocks import (
-    Block, JointModel, Observation, Frozen, LearnedVAE,
-    LearnedLinear, LearnedAffine, KnownPhysics, LinearCoupling,
+    Block,
+    Frozen,
+    JointModel,
+    KnownPhysics,
+    LearnedAffine,
+    LearnedDelayLinear,
+    LearnedLinear,
+    LearnedVAE,
+    LinearCoupling,
+    Observation,
 )
+from jopa.distributions import (
+    Gaussian,
+    Wishart,
+    combine_gaussians,
+    gaussian_mean,
+    gaussian_mean_cov,
+    gaussian_prior,
+    vague_gaussian,
+)
+from jopa.message_passing import compute_marginals, forward_backward
 from jopa.nn.vae import VAE
-
+from jopa.nodes.transition import CTCache, CTMeta
 
 # ---- package surface -------------------------------------------------------
 
@@ -24,7 +36,7 @@ def test_package_exports_are_importable():
     import jopa
     for name in jopa.__all__:
         assert hasattr(jopa, name), f"jopa.{name} is in __all__ but not importable"
-    from jopa import Gaussian, Block, LearnedLinear, LearnedVAE
+    from jopa import Block, Gaussian, LearnedLinear, LearnedVAE
     assert all(callable(x) for x in (Gaussian, Block, LearnedLinear, LearnedVAE))
 
 
@@ -332,3 +344,129 @@ def test_filter_composes_blocks_and_incorporates_observations():
     # high-precision observations → first-step beliefs sit on the observations.
     assert np.allclose(np.array(gaussian_mean(beliefs["z"])), [1.0, 0.5], atol=1e-2)
     assert np.allclose(np.array(gaussian_mean(beliefs["p"])), [0.1, 0.0], atol=1e-2)
+
+
+def test_vae_supports_64px_frames():
+    """img_size=64 encodes/decodes at the right shapes; 28 stays the default."""
+    model = VAE(latent_dim=3, ch=8, img_size=64)
+    rng = jax.random.PRNGKey(0)
+    params = model.init({"params": rng}, jnp.ones((1, 64, 64)), rng)
+    mu, log_std = model.apply(params, jnp.ones((2, 64, 64)), method=model.encode)
+    recon = model.apply(params, mu, method=model.decode)
+    assert mu.shape == (2, 3) and log_std.shape == (2, 3)
+    assert recon.shape == (2, 64 * 64)
+
+
+def test_learned_delay_linear_preserves_shift_and_learns_controlled_top_block():
+    rng = np.random.RandomState(9)
+    h, delay, du = 2, 3, 1
+    B_true = np.array([[0.25], [-0.15]])
+    state_seqs, control_seqs = [], []
+    for _ in range(8):
+        features = [rng.randn(h) * 0.2, rng.randn(h) * 0.2]
+        controls = []
+        for _ in range(48):
+            u = rng.uniform(-1, 1, du)
+            nxt = 1.65 * features[-1] - 0.7 * features[-2] + B_true @ u
+            nxt += 0.005 * rng.randn(h)
+            features.append(nxt); controls.append(u)
+        z = [np.concatenate(features[t:t + delay]) for t in range(len(features) - delay + 1)]
+        state_seqs.append(np.asarray(z))
+        # Two feature states were seeded before controls[0] generated h[2];
+        # the first window transition h[0:3] -> h[1:4] therefore uses u[1].
+        control_seqs.append(controls[1:])
+
+    d = h * delay
+    expected_shift = np.zeros((d - h, d))
+    expected_shift[:, h:] = np.eye(d - h)
+    tr = LearnedDelayLinear(h, delay=delay, du=du, offset=False,
+                            n_iterations=10, shift_cov=1e-7)
+    tr.learn_observed(state_seqs, control_seqs, obs_prec=1e4)
+    assert np.all(np.isfinite(np.asarray(tr.A)))
+    assert np.allclose(np.asarray(tr.A[:d - h]), expected_shift, atol=1e-5)
+    assert np.max(np.abs(np.asarray(tr.B[:d - h]))) < 1e-5
+    assert np.allclose(np.asarray(tr.B[d - h:]), B_true, atol=0.08)
+    tr.attach_replay(state_seqs, control_seqs, neighbors=64,
+                     refresh_every=1, obs_prec=1e4, n_iterations=6)
+    assert tr.localize(state_seqs[0][10])
+    assert np.all(np.isfinite(np.asarray(tr.B)))
+
+
+def test_exact_plan_matches_lq_in_deterministic_limit():
+    """The exact Gaussian action posterior reduces to the LQ solution when the
+    transition is near-deterministic (LQG duality sanity check)."""
+    from jopa.blocks import _identity_meta
+    from jopa.message_passing import (
+        infer_actions_exact,
+        infer_actions_exact_numpy,
+        infer_actions_exact_posterior,
+    )
+
+    rng = np.random.RandomState(0)
+    d, du, H = 3, 2, 6
+    A = np.eye(d) + 0.1 * rng.randn(d, d)
+    B = 0.5 * rng.randn(d, du)
+    W = 1e6 * np.eye(d)                       # near-deterministic
+    x0 = rng.randn(d)
+    zg = rng.randn(d)
+    reg, pg = 1e-2, 1.0
+
+    q_a = Gaussian(eta=1e9 * jnp.asarray(A.ravel()), lam=1e9 * jnp.eye(d * d))
+    q_W = Wishart(df=1e6, inv_scale=1e6 * jnp.linalg.inv(jnp.asarray(W)))
+    q_b = Gaussian(eta=1e9 * jnp.asarray(B.ravel()), lam=1e9 * jnp.eye(d * du))
+    cache = CTCache(q_a, q_W, _identity_meta(d), q_b)
+
+    prior_x = Gaussian(eta=1e9 * jnp.asarray(x0), lam=1e9 * jnp.eye(d))
+    prior_u = Gaussian(eta=jnp.zeros(du), lam=reg * pg * jnp.eye(du))
+    vague = Gaussian(eta=jnp.zeros(d), lam=jnp.zeros((d, d)))
+    goal = Gaussian(eta=pg * jnp.asarray(zg), lam=pg * jnp.eye(d))
+    observations = [vague] * H + [goal]
+    acts = np.array(infer_actions_exact(prior_x, observations, cache, prior_u))
+    posterior = infer_actions_exact_posterior(
+        prior_x, observations, cache, prior_u)
+    reference = np.array(
+        infer_actions_exact_numpy(prior_x, observations, cache, prior_u))
+    # GPU and LAPACK solve the deliberately ill-conditioned (W=1e6) system
+    # with slightly different elimination kernels.
+    np.testing.assert_allclose(acts, reference, rtol=5e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(posterior.mean), acts, rtol=5e-6, atol=1e-6)
+    covariance = np.asarray(posterior.joint_covariance)
+    assert covariance.shape == (H * du, H * du)
+    assert np.linalg.eigvalsh(covariance).min() > -1e-9
+
+    # closed-form LQ: minimise |x_H - zg|^2 + reg |u|^2 under x' = A x + B u
+    M = np.zeros((d, du * H))
+    for k in range(H):
+        M[:, du * k:du * k + du] = np.linalg.matrix_power(A, H - 1 - k) @ B
+    b = zg - np.linalg.matrix_power(A, H) @ x0
+    u_lq = np.linalg.solve(M.T @ M + reg * np.eye(du * H), M.T @ b).reshape(H, du)
+    assert np.abs(acts - u_lq).max() < 1e-3
+
+
+def test_plan_method_vmp_still_reaches():
+    """The iterative VMP planner stays available via method='vmp'."""
+    rng = np.random.RandomState(1)
+    A = np.array([[1.0, 0.1], [0.0, 1.0]])
+    B = np.array([[0.0], [0.1]])
+    trajs = []
+    for _ in range(15):
+        x = rng.randn(2) * 0.5
+        seq, us = [x.copy()], []
+        for _ in range(39):
+            u = rng.randn(1)
+            us.append(u)
+            x = A @ x + (B @ u).ravel() + 0.005 * rng.randn(2)
+            seq.append(x.copy())
+        trajs.append({"z": seq, "control": us})
+    block = Block("z", LearnedLinear(dim=2, du=1, n_iterations=40),
+                  observe=lambda d: _msg(d, 1e4))
+    model = JointModel([block])
+    model.learn(trajs)
+    obs = {"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]}
+    for method in ("exact", "vmp"):
+        actions = model.plan(obs, n_iterations=300, method=method)
+        x = np.array([0.0, 0.0])
+        for u in np.array(actions):
+            x = A @ x + (B @ u).ravel()
+        assert abs(x[0] - 1.0) < 0.2, method

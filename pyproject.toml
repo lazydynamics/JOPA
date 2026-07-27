@@ -23,6 +23,13 @@ jopa-validate = "jopa.validate:main"
 
 [project.optional-dependencies]
 viz = ["matplotlib>=3.8"]
+reacher = [
+    "gymnasium[mujoco]>=1.0",
+    "mujoco>=3.0",
+    "matplotlib>=3.8",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]

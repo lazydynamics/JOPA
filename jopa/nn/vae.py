@@ -1,101 +1,83 @@
-"""Convolutional VAE for 28×28 frames. Supports stacked-frame input via
-`n_frames` — the encoder sees K consecutive frames as input channels and the
-decoder reconstructs the whole K-frame window, so the latent must encode
-motion (velocity), not just the latest pose. (`n_frames=1` is the plain
-single-frame VAE.)"""
-from __future__ import annotations
-from typing import Callable, NamedTuple
-from pathlib import Path
+"""Convolutional VAE for square grayscale frames (28, 64 or 128 px).
 
+`n_frames=1` is the plain single-frame VAE. `n_frames=K>1` stacks K consecutive
+frames as encoder input channels and reconstructs the whole K-frame window, so
+the latent must encode motion (velocity), not just the latest pose.
+
+This module also re-exports the rest of `jopa.nn` so that
+`from jopa.nn.vae import ...` keeps working for every symbol it ever exposed.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
-import flax.serialization as serialization
-import optax
 import numpy as np
+import optax
 from tqdm import tqdm
 
+from ..config import (
+    DEFAULT_IMG_SIZE,
+    DEFAULT_LATENT_DIM,
+    DEFAULT_N_FRAMES,
+    ENCODER_CHANNELS,
+    LOG_STD_CLIP,
+    PROB_CLIP,
+    SUPPORTED_IMG_SIZES,
+    VAETrainingConfig,
+)
+from .layers import _as_batch, _Decoder, _Encoder, _latest_frame
+from .losses import decorrelation
+from .persistence import (
+    VAEAdapter,
+    _validate_checkpoint_tree,
+    load_params,
+    make_encode_decode,
+    save_params,
+)
+from .pose_motion import PoseMotionVAE, _MotionHead, train_pose_motion_vae
 
-LOG_STD_CLIP = (-6.0, 2.0)
-PROB_CLIP = (1e-6, 1.0 - 1e-6)
-
-
-def _as_batch(window, n_frames):
-    """A single (28,28) frame or (K,28,28) window → a 1-element model batch."""
-    w = jnp.asarray(window)
-    return w.reshape(1, 28, 28) if n_frames == 1 else w.reshape(1, n_frames, 28, 28)
-
-
-def _latest_frame(recon):
-    """The most-recent 28×28 frame from a flat decoder output (… → 28×28)."""
-    return jnp.asarray(recon).reshape(-1, 28, 28)[-1]
-
-
-# ---------------------------------------------------------------------------
-# Architecture
-# ---------------------------------------------------------------------------
-
-class _Encoder(nn.Module):
-    """Strided-conv encoder.  Input `(B, K, 28, 28)` (K = n_frames stacked as
-    input channels) or `(B, 28, 28)` when K=1.  Output `(μ, log σ)` each `(B, d)`."""
-    latent_dim: int = 2
-    ch: int = 32
-    n_frames: int = 1
-
-    @nn.compact
-    def __call__(self, x):
-        c = self.ch
-        # Accept (B, 28, 28) for n_frames=1 or (B, K, 28, 28) for K>=1.
-        if x.ndim == 3:
-            x = x[:, None, :, :]
-        x = jnp.transpose(x, (0, 2, 3, 1))                # (B, 28, 28, K)
-        x = nn.relu(nn.Conv(c,     (4, 4), strides=2, padding="SAME")(x))   # 14×14
-        x = nn.relu(nn.Conv(c * 2, (4, 4), strides=2, padding="SAME")(x))   #  7×7
-        x = x.reshape((x.shape[0], -1))
-        x = nn.relu(nn.Dense(256)(x))
-        x = nn.relu(nn.Dense(256)(x))
-        mu      = nn.Dense(self.latent_dim)(x)
-        log_std = nn.Dense(self.latent_dim,
-                           bias_init=nn.initializers.constant(-1.0))(x)
-        return mu, log_std
-
-
-class _Decoder(nn.Module):
-    """Transposed-conv decoder  `(B, d) → (B, n_frames*784)` Bernoulli probs.
-    `n_frames=1` (default) emits one 28×28 frame; `n_frames=K>1` reconstructs
-    the whole K-frame window, which forces the latent to encode motion
-    (velocity), not just the latest pose."""
-    ch: int = 32
-    n_frames: int = 1
-
-    @nn.compact
-    def __call__(self, z):
-        c = self.ch
-        x = nn.Dense(256)(z)
-        x = nn.relu(nn.Dense(256)(x))
-        x = nn.relu(nn.Dense(7 * 7 * c * 2)(x))
-        x = x.reshape((-1, 7, 7, c * 2))
-        x = nn.relu(nn.ConvTranspose(c, (4, 4), strides=(2, 2), padding="SAME")(x))     # 14×14
-        x = nn.ConvTranspose(self.n_frames, (4, 4), strides=(2, 2), padding="SAME")(x)  # 28×28×K
-        x = jnp.transpose(x, (0, 3, 1, 2))                                              # (B, K, 28, 28)
-        return jax.nn.sigmoid(5.0 * x).reshape((z.shape[0], -1))                         # (B, K*784)
+__all__ = [
+    "LOG_STD_CLIP",
+    "PROB_CLIP",
+    "VAE",
+    "PoseMotionVAE",
+    "VAEAdapter",
+    "_Decoder",
+    "_Encoder",
+    "_MotionHead",
+    "_as_batch",
+    "_latest_frame",
+    "_validate_checkpoint_tree",
+    "decorrelation",
+    "load_params",
+    "make_encode_decode",
+    "save_params",
+    "train_pose_motion_vae",
+    "train_vae",
+]
 
 
 class VAE(nn.Module):
-    """Convolutional VAE for 28×28 frames.
+    """Convolutional VAE for square grayscale frames (`img_size` 28, 64 or 128).
 
     `n_frames=1` (default): single-frame encoder + single-frame decoder.
     `n_frames=K>1`: encoder sees K stacked frames and the decoder reconstructs
     the whole K-frame window, so the latent must encode motion (velocity), not
     just the latest pose.
     """
-    latent_dim: int = 2
-    ch: int = 32
-    n_frames: int = 1
+    latent_dim: int = DEFAULT_LATENT_DIM
+    ch: int = ENCODER_CHANNELS
+    n_frames: int = DEFAULT_N_FRAMES
+    img_size: int = DEFAULT_IMG_SIZE
 
     def setup(self):
-        self.encoder = _Encoder(self.latent_dim, self.ch, self.n_frames)
-        self.decoder = _Decoder(self.ch, self.n_frames)
+        if self.img_size not in SUPPORTED_IMG_SIZES:
+            raise ValueError(f"img_size must be 28, 64 or 128, got {self.img_size}")
+        self.encoder = _Encoder(self.latent_dim, self.ch, self.n_frames, self.img_size)
+        self.decoder = _Decoder(self.ch, self.n_frames, self.img_size)
 
     def __call__(self, x, z_rng):
         mu, log_std = self.encoder(x)
@@ -108,10 +90,6 @@ class VAE(nn.Module):
     def decode(self, z):
         return self.decoder(z)
 
-
-# ---------------------------------------------------------------------------
-# Loss & training
-# ---------------------------------------------------------------------------
 
 def _elbo_loss(params, model, batch, target, z_rng, beta):
     """ELBO. `batch` is the encoder input (window or single frame); `target`
@@ -129,45 +107,61 @@ def _elbo_loss(params, model, batch, target, z_rng, beta):
 def train_vae(
     images: np.ndarray,
     *,
-    latent_dim: int = 2,
-    ch: int = 32,
-    n_frames: int = 1,
-    epochs: int = 200,
-    batch_size: int = 64,
-    lr: float = 1e-3,
-    seed: int = 0,
+    config: VAETrainingConfig | None = None,
+    latent_dim: int = VAETrainingConfig.latent_dim,
+    ch: int = VAETrainingConfig.ch,
+    n_frames: int = VAETrainingConfig.n_frames,
+    img_size: int = VAETrainingConfig.img_size,
+    epochs: int = VAETrainingConfig.epochs,
+    batch_size: int = VAETrainingConfig.batch_size,
+    lr: float = VAETrainingConfig.lr,
+    beta: float = VAETrainingConfig.beta,
+    beta_start: float = VAETrainingConfig.beta_start,
+    beta_warmup: int = VAETrainingConfig.beta_warmup,
+    seed: int = VAETrainingConfig.seed,
     verbose: bool = True,
     callback: Callable | None = None,
 ) -> tuple[VAE, dict]:
     """Train the VAE (autoencoder ELBO — the decoder reconstructs its input).
 
-    Single-frame: `images` of shape `(N, 28, 28)`.
-    Multi-frame: `images` of shape `(N, K, 28, 28)` (the windows); the decoder
+    Single-frame: `images` of shape `(N, S, S)` with `S = img_size`.
+    Multi-frame: `images` of shape `(N, K, S, S)` (the windows); the decoder
     reconstructs the whole K-frame window, so the latent must encode motion.
     `n_frames` must equal K.
 
-    β-annealing from 0.1 → 1.0 over the first 15 epochs.
+    β anneals `beta_start` → `beta` over the first `beta_warmup` epochs.
+    Large low-contrast frames need a long, low warmup (e.g. `beta_start=0.0,
+    beta_warmup=80`) or the posterior collapses before the encoder locks on.
+
+    Hyperparameters are documented as the fields of
+    :class:`jopa.config.VAETrainingConfig`; passing a preset as ``config``
+    supersedes the individual keywords.
     """
+    if config is not None:
+        return train_vae(
+            images, verbose=verbose, callback=callback, **config.kwargs())
     images = jnp.asarray(images)
+    S = img_size
     if n_frames == 1:
         if images.ndim == 4:
             if images.shape[1] != 1:
                 raise ValueError(
-                    f"single-frame training expects (N, 28, 28) or (N, 1, 28, 28), got {images.shape}")
-            images = images[:, 0]            # (N, 1, 28, 28) → (N, 28, 28)
+                    f"single-frame training expects (N, {S}, {S}) or (N, 1, {S}, {S}), got {images.shape}")
+            images = images[:, 0]
         elif images.ndim != 3:
             raise ValueError(
-                f"single-frame training expects (N, 28, 28), got {images.shape}")
+                f"single-frame training expects (N, {S}, {S}), got {images.shape}")
     elif images.ndim != 4 or images.shape[1] != n_frames:
         raise ValueError(
-            f"n_frames={n_frames} expects (N, {n_frames}, 28, 28), got {images.shape}")
-    targets_arr = images                     # autoencode: the decoder reconstructs its input
+            f"n_frames={n_frames} expects (N, {n_frames}, {S}, {S}), got {images.shape}")
+    if images.shape[-1] != S or images.shape[-2] != S:
+        raise ValueError(f"img_size={S} expects {S}×{S} frames, got {images.shape}")
 
-    model = VAE(latent_dim=latent_dim, ch=ch, n_frames=n_frames)
+    model = VAE(latent_dim=latent_dim, ch=ch, n_frames=n_frames, img_size=S)
     rng = jax.random.PRNGKey(seed)
     rng, init_rng, z_rng = jax.random.split(rng, 3)
-    init_input = (jnp.ones((1, 28, 28)) if n_frames == 1
-                  else jnp.ones((1, n_frames, 28, 28)))
+    init_input = (jnp.ones((1, S, S)) if n_frames == 1
+                  else jnp.ones((1, n_frames, S, S)))
     params = model.init({"params": init_rng}, init_input, z_rng)
 
     tx = optax.adam(lr)
@@ -187,72 +181,16 @@ def train_vae(
         rng, perm_rng = jax.random.split(rng)
         idx = jax.random.permutation(perm_rng, n)
         imgs = images[idx]
-        targs = targets_arr[idx]
-        beta = min(1.0, 0.1 + 0.9 * (epoch - 1) / 15)
+        beta_t = min(beta, beta_start + (beta - beta_start) * (epoch - 1) / max(beta_warmup, 1))
         losses = []
         for i in range(0, n, batch_size):
             rng, z_rng = jax.random.split(rng)
+            batch = imgs[i : i + batch_size]
             params, opt_state, loss = step(
-                params, opt_state,
-                imgs[i : i + batch_size], targs[i : i + batch_size],
-                z_rng, beta,
+                params, opt_state, batch, batch, z_rng, beta_t,
             )
             losses.append(float(loss))
-        pbar.set_postfix(loss=f"{np.mean(losses):.1f}", beta=f"{beta:.2f}")
+        pbar.set_postfix(loss=f"{np.mean(losses):.1f}", beta=f"{beta_t:.2f}")
         if callback is not None:
             callback(epoch, params, float(np.mean(losses)))
     return model, params
-
-
-# ---------------------------------------------------------------------------
-# Encode / decode helpers
-# ---------------------------------------------------------------------------
-
-class VAEAdapter(NamedTuple):
-    """Jitted `encode`/`decode` closures bundled with the latent dimension."""
-    encode: Callable
-    decode: Callable
-    latent_dim: int
-
-
-def make_encode_decode(model, params) -> "VAEAdapter":
-    K = getattr(model, "n_frames", 1)
-
-    @jax.jit
-    def encode_fn(window):
-        mu, ls = model.apply(params, _as_batch(window, K), method=model.encode)
-        ls = jnp.clip(ls, *LOG_STD_CLIP)
-        return mu[0], ls[0]
-
-    @jax.jit
-    def decode_fn(z):
-        return _latest_frame(model.apply(params, z.reshape(1, -1), method=model.decode))
-
-    return VAEAdapter(encode=encode_fn, decode=decode_fn, latent_dim=model.latent_dim)
-
-
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
-def save_params(params, path: str | Path):
-    with open(str(path), "wb") as f:
-        f.write(serialization.to_bytes(params))
-
-
-def load_params(model: VAE, path: str | Path) -> dict:
-    """Read flax msgpack; falls back to legacy `np.savez` (positional `p0..pN`)."""
-    path = str(path)
-    rng = jax.random.PRNGKey(0)
-    K = getattr(model, "n_frames", 1)
-    init_input = (jnp.ones((1, 28, 28)) if K == 1 else jnp.ones((1, K, 28, 28)))
-    template = model.init({"params": rng}, init_input, rng)
-    with open(path, "rb") as f:
-        header = f.read(4)
-    if header.startswith(b"PK"):
-        data = np.load(path)
-        leaves = jax.tree.leaves(template)
-        flat = [jnp.array(data[f"p{i}"]) for i in range(len(leaves))]
-        return jax.tree.unflatten(jax.tree.structure(template), flat)
-    with open(path, "rb") as f:
-        return serialization.from_bytes(template, f.read())

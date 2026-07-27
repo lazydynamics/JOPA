@@ -1,13 +1,23 @@
 from .transition import (
-    CTMeta, CTCache,
-    ct_forward, ct_backward,
-    ct_message_a, ct_message_b, ct_message_u, ct_message_W,
+    CTCache,
+    CTMeta,
+    ct_backward,
+    ct_forward,
     ct_marginal_yx,
+    ct_message_a,
+    ct_message_b,
+    ct_message_u,
+    ct_message_W,
 )
 
 __all__ = [
-    "CTMeta", "CTCache",
-    "ct_forward", "ct_backward",
-    "ct_message_a", "ct_message_b", "ct_message_u", "ct_message_W",
+    "CTCache",
+    "CTMeta",
+    "ct_backward",
+    "ct_forward",
     "ct_marginal_yx",
+    "ct_message_W",
+    "ct_message_a",
+    "ct_message_b",
+    "ct_message_u",
 ]
