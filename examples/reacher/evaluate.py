@@ -16,7 +16,7 @@ from .artifacts import (
     validate_manifest,
     write_json,
 )
-from .runtime import EVAL_STEPS, N_FRAMES, ReacherLoop
+from .runtime import EVAL_STEPS, N_FRAMES, ReacherLoop, ghosted
 
 # A hold counts when the mean fingertip error over the final 20 steps is under
 # 3 cm; a pose is settled when it stays there for 95% of the final 60.
@@ -75,6 +75,7 @@ def run_evaluate(args):
     def run_pose(label, pose_index, start_pose, goal_pose, pose_seed=None):
         goal_xy = loop.fingertip_of(goal_pose)
         loop.reset(goal_pose, goal_xy)
+        goal_render = loop.display_frame() if not args.no_video else None
         goal_frame = loop.sensor_frame()
         agent = loop.agent_for(goal_frame, track_uncertainty=True)
         goal_latent = np.asarray(loop.observation.encode(goal_frame)[0])
@@ -109,7 +110,7 @@ def run_evaluate(args):
                 trace["drift_norm"].append(float(np.linalg.norm(drift)))
                 trace["drift_std"].append(float(np.mean(drift_std)))
             if not args.no_video:
-                video.append(loop.display_frame())
+                video.append(ghosted(loop.display_frame(), goal_render))
         trace = {name: np.asarray(values) for name, values in trace.items()}
         metrics = terminal_metrics(
             trace["error_cm"], HOLD_WINDOW, HOLD_THRESHOLD_CM)
