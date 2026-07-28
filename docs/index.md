@@ -176,7 +176,7 @@ The rules themselves are not new. They were derived and integrated into
 ## Credit
 
 The structured variational rules for learning a transition function when both
-endpoints are uncertain were derived and integrated into
-[RxInfer](https://rxinfer.com) some time before this repository existed; JOPA's
-`ContinuousTransition` node implements the same updates. The write-up remains
-unpublished.
+endpoints are uncertain are our own earlier work: derived and contributed to
+[RxInfer](https://rxinfer.com) before this repository existed. JOPA's
+`ContinuousTransition` node implements the same updates. The write-up is in
+preparation.
