@@ -72,12 +72,12 @@ def latent_subgoal(belief_mean, goal_mean, trust=SUBGOAL_TRUST):
 
 # The goal is handed over as an image, so show it as one: the target pose is
 # rendered from the same camera and composited under the live frame. The arena is
-# a uniform grey, so the goal's arm is exactly the pixels that differ from the
-# modal colour; draining their colour keeps overlapping arms legible, because
-# only the live arm keeps its hue.
+# a uniform grey, so the goal's arm is the pixels differing from the arena colour,
+# taken as the per-channel median of the goal render.
+#
 # The ghost is lifted toward white rather than darkened: on a mid-grey arena that
-# is the direction with contrast to spare, so it survives being downscaled into a
-# small panel.
+# is the direction with contrast to spare (66 levels against 26), so it survives
+# being downscaled into a small panel, and only the live arm keeps its hue.
 GHOST_STRENGTH = 0.85
 GHOST_LIGHT = 0.55
 ARENA_TOLERANCE = 24.0

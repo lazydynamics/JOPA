@@ -38,9 +38,9 @@ questions, and three properties follow from that.
 **Uncertainty is carried end to end.** The sensor emits a Gaussian whose
 per-dimension precision it sets itself. The dynamics are a posterior `q(A,B,W)` —
 Gaussian over `A` and `B`, Wishart over the process precision — not point
-estimates. The planner reads both. In the animation above, a sensor that
-overstates its precision by 12× spends 1.9× the actuation and 2.0× the control
-chatter for the same final accuracy, because it acts on its own noise.
+estimates. The planner reads both. Measured on the pixel Reacher: a sensor that overstates
+its precision by 12× spends 1.9× the actuation and 2.0× the control chatter for
+the same final accuracy, because it acts on its own noise.
 
 **Planning is exact inference, not optimization.** Group each time slice as
 `s_t = [x_t; u_t]` and the joint is a Gaussian chain, so the α/β recursions that
@@ -99,7 +99,7 @@ reports calibrated uncertainty about both the state and its own dynamics.
 ## The model
 
 <p align="center">
-  <img src="assets/model.png" width="70%" alt="The JOPA generative model: linear-Gaussian latent transitions with a learned observation likelihood" />
+  <img src="https://raw.githubusercontent.com/lazydynamics/JOPA/main/assets/model.png" width="70%" alt="The JOPA generative model: linear-Gaussian latent transitions with a learned observation likelihood" />
 </p>
 
 A `JointModel` is a factor graph; each `Block` contributes a latent slice with a
