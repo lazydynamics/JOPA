@@ -5,6 +5,8 @@ dynamics, infers latent state, predicts the future, and plans actions. Every
 *inference* task is message passing on that graph; the pixel encoder is the one
 component trained by gradients.
 
+[![CI](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml/badge.svg)](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml)
+
 <p align="center">
   <img src="assets/hero.gif" width="92%" alt="The JOPA factor graph with forward, backward, observation and parameter messages; below, one sweep smoothing and then predicting, and the closed-loop cost of a sensor that overstates its own precision" />
 </p>

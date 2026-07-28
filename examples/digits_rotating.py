@@ -6,7 +6,16 @@ to learn a linear dynamical system in latent space and predict future frames.
 Matches the RxInfer.jl example:
   https://examples.rxinfer.com/categories/advanced_examples/learning_dynamics_with_vaes/
 """
+import argparse
 import os
+
+_p = argparse.ArgumentParser(description=__doc__)
+_p.add_argument("--smoke", action="store_true",
+                help="Tiny end-to-end configuration, for CI.")
+_p.add_argument("--checkpoint-dir", default=None)
+_p.add_argument("--output-dir", default=None)
+args = _p.parse_args()
+SMOKE = args.smoke
 
 import jax.numpy as jnp
 import numpy as np
@@ -17,33 +26,35 @@ from jopa.distributions import Gaussian
 from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHECKPOINTS = os.path.join(ROOT, "checkpoints")
-OUTPUTS = os.path.join(ROOT, "outputs")
+CHECKPOINTS = args.checkpoint_dir or os.path.join(ROOT, "checkpoints")
+OUTPUTS = args.output_dir or os.path.join(ROOT, "outputs")
 os.makedirs(CHECKPOINTS, exist_ok=True)
 os.makedirs(OUTPUTS, exist_ok=True)
 
 print("Creating rotated MNIST dataset …")
 train_images, train_labels = rotating_mnist(
-    n_digits=10, n_rotations=36, digits=(0, 1, 8),
+    n_digits=1 if SMOKE else 10,
+    n_rotations=4 if SMOKE else 36, digits=(0, 1, 8),
 )
 print(f"  {train_images.shape[0]} training images (10°/step, binarised)")
 
 vae_path = os.path.join(CHECKPOINTS, "vae_d4.npz")
-model = VAE(latent_dim=4)
+model = VAE(latent_dim=4, ch=4 if SMOKE else 32)
 
 try:
     params = load_params(model, vae_path)
     print(f"Loaded VAE from {vae_path}")
 except FileNotFoundError:
     print("Training VAE …")
-    model, params = train_vae(train_images, latent_dim=4, epochs=100, seed=42)
+    model, params = train_vae(train_images, latent_dim=4, ch=4 if SMOKE else 32,
+                              epochs=1 if SMOKE else 100, seed=42)
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
 vae = make_encode_decode(model, params)
 
-n_observed = 100
-n_predicted = 100
+n_observed = 6 if SMOKE else 100
+n_predicted = 2 if SMOKE else 100
 step_deg = 360.0 / n_observed
 
 all_imgs, all_labs = load_mnist()
