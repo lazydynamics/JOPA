@@ -249,6 +249,26 @@ reads the frozen sensor and dynamics from `--outdir` (default
 `outputs/reacher_pixels`) and writes traces, per-pose metrics and video there.
 `MUJOCO_GL=egl` is required for headless rendering.
 
+## How this was built
+
+Most of this repository was written by Claude Code under human direction. Read
+the code before you rely on it, treat the examples as demonstrations rather than
+reference implementations, and expect bugs. Known limitations are filed as issues
+rather than left implicit, including the ones that bound the results above.
+
+The inference core is the exception. `jopa/nodes/transition.py` implements the
+`ContinuousTransition` node, and its structured variational rules were derived
+and ported by hand from our earlier [RxInfer](https://rxinfer.com) contribution,
+and are covered by unit tests in `tests/test_transition_node.py`. Those rules,
+and the file that implements them, are the part to trust. One known gap in them
+is tracked separately: `ct_forward` predicts with the posterior mean of `A`
+rather than its distribution, so the online filter is certainty-equivalent in the
+parameters while learning and smoothing are not.
+
+Contributions written with an LLM are welcome, and worth saying so in the pull
+request. Keep the diff small enough for a human to review and make sure the
+tests pass.
+
 ## License
 
 GPL-3.0.
