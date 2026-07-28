@@ -259,10 +259,11 @@ rather than left implicit, including the ones that bound the results above.
 The inference core is the exception. `jopa/nodes/transition.py` implements the
 `ContinuousTransition` node, and its structured variational rules were derived
 and ported by hand from our earlier [RxInfer](https://rxinfer.com) contribution,
-with unit tests in `tests/test_transition_node.py`. That file is the part to
-trust. One known gap in it is tracked separately: `ct_forward` predicts with the
-posterior mean of `A` rather than its distribution, so the online filter is
-certainty-equivalent in the parameters while learning and smoothing are not.
+and are covered by unit tests in `tests/test_transition_node.py`. Those rules,
+and the file that implements them, are the part to trust. One known gap in them
+is tracked separately: `ct_forward` predicts with the posterior mean of `A`
+rather than its distribution, so the online filter is certainty-equivalent in the
+parameters while learning and smoothing are not.
 
 Contributions written with an LLM are welcome, and worth saying so in the pull
 request. Keep the diff small enough for a human to review and make sure the
