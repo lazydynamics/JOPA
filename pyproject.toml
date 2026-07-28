@@ -37,3 +37,6 @@ include = ["jopa*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests import `examples.*`; without this, a bare `pytest` invocation (as CI
+# uses) has no repo root on sys.path, while `python -m pytest` happens to work.
+pythonpath = ["."]
