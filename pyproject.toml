@@ -30,7 +30,7 @@ reacher = [
     "imageio>=2.34",
     "imageio-ffmpeg>=0.5",
 ]
-test = ["pytest>=8"]
+test = ["pytest>=8", "matplotlib>=3.8"]
 
 [tool.setuptools.packages.find]
 include = ["jopa*"]
