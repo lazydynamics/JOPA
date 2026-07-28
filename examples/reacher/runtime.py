@@ -75,8 +75,11 @@ def latent_subgoal(belief_mean, goal_mean, trust=SUBGOAL_TRUST):
 # a uniform grey, so the goal's arm is exactly the pixels that differ from the
 # modal colour; draining their colour keeps overlapping arms legible, because
 # only the live arm keeps its hue.
-GHOST_STRENGTH = 0.8
-GHOST_LIFT = 0.45
+# The ghost is lifted toward white rather than darkened: on a mid-grey arena that
+# is the direction with contrast to spare, so it survives being downscaled into a
+# small panel.
+GHOST_STRENGTH = 0.85
+GHOST_LIGHT = 0.55
 ARENA_TOLERANCE = 24.0
 
 
@@ -90,10 +93,9 @@ def ghosted(live, goal_render):
     # its colour, and an overlapping live arm stays in front of its own ghost.
     mask = ((np.abs(goal - arena).sum(-1) > ARENA_TOLERANCE)
             & (np.abs(goal - frame).sum(-1) > ARENA_TOLERANCE))
-    luminance = (goal @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
-    pale = GHOST_LIFT * arena + (1.0 - GHOST_LIFT) * np.repeat(luminance, 3, -1)
+    pale = arena + GHOST_LIGHT * (255.0 - arena)
     out = frame.copy()
-    out[mask] = (1.0 - GHOST_STRENGTH) * out[mask] + GHOST_STRENGTH * pale[mask]
+    out[mask] = (1.0 - GHOST_STRENGTH) * out[mask] + GHOST_STRENGTH * pale
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
