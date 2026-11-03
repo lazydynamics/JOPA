@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jopa.blocks import Block, JointModel, LearnedLinear
+from jopa import Block, JointModel, LearnedLinear
 from jopa.distributions import (
     Gaussian,
     gaussian_logpdf,
@@ -124,8 +124,7 @@ def test_plan_with_offset_compensates_drift():
                   observe=lambda d: _msg(d, 1e4))
     model = JointModel([block])
     model.learn(trajs)
-    actions = model.plan({"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]},
-                         n_iterations=300)
+    actions = model.plan({"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]})
     assert actions.shape == (19, 1)           # pinned channel is not returned
     x = np.array([0.0, 0.0])
     for u in np.array(actions):

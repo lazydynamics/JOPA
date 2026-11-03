@@ -1,83 +1,74 @@
-"""Convolutional VAE for square grayscale frames (28, 64 or 128 px).
+"""Convolutional VAE for 28×28 grayscale frames — a pixel sensor.
 
-`n_frames=1` is the plain single-frame VAE. `n_frames=K>1` stacks K consecutive
-frames as encoder input channels and reconstructs the whole K-frame window, so
-the latent must encode motion (velocity), not just the latest pose.
-
-This module also re-exports the rest of `jopa.nn` so that
-`from jopa.nn.vae import ...` keeps working for every symbol it ever exposed.
+The encoder emits ``(μ, log σ)``, which `jopa.VAEObservation` and
+`jopa.LearnedVAE` turn into heteroscedastic Gaussian messages. Train it with
+`train_vae`, store it with `save_params` / `load_params`.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from flax import serialization
 from tqdm import tqdm
 
-from ..config import (
-    DEFAULT_IMG_SIZE,
-    DEFAULT_LATENT_DIM,
-    DEFAULT_N_FRAMES,
-    ENCODER_CHANNELS,
-    LOG_STD_CLIP,
-    PROB_CLIP,
-    SUPPORTED_IMG_SIZES,
-    VAETrainingConfig,
-)
-from .layers import _as_batch, _Decoder, _Encoder, _latest_frame
-from .losses import decorrelation
-from .persistence import (
-    VAEAdapter,
-    _validate_checkpoint_tree,
-    load_params,
-    make_encode_decode,
-    save_params,
-)
-from .pose_motion import PoseMotionVAE, _MotionHead, train_pose_motion_vae
+from ..config import LOG_STD_CLIP, PROB_CLIP
 
-__all__ = [
-    "LOG_STD_CLIP",
-    "PROB_CLIP",
-    "VAE",
-    "PoseMotionVAE",
-    "VAEAdapter",
-    "_Decoder",
-    "_Encoder",
-    "_MotionHead",
-    "_as_batch",
-    "_latest_frame",
-    "_validate_checkpoint_tree",
-    "decorrelation",
-    "load_params",
-    "make_encode_decode",
-    "save_params",
-    "train_pose_motion_vae",
-    "train_vae",
-]
+SIZE = 28
+TRUNK_WIDTH = 256
+KERNEL, STRIDE = (4, 4), 2
+# exp(-1) ≈ 0.37 starts the sensor moderately uncertain, so the variance head
+# neither saturates the clip nor claims precision before the mean head learns.
+LOG_STD_BIAS_INIT = -1.0
+
+
+class _Encoder(nn.Module):
+    """``(B, 28, 28)`` → ``(μ, log σ)``, each ``(B, latent_dim)``."""
+    latent_dim: int
+    ch: int
+
+    @nn.compact
+    def __call__(self, x):
+        x = x[..., None]
+        x = nn.relu(nn.Conv(self.ch, KERNEL, strides=STRIDE, padding="SAME")(x))       # 14
+        x = nn.relu(nn.Conv(self.ch * 2, KERNEL, strides=STRIDE, padding="SAME")(x))   # 7
+        x = x.reshape((x.shape[0], -1))
+        x = nn.relu(nn.Dense(TRUNK_WIDTH)(x))
+        x = nn.relu(nn.Dense(TRUNK_WIDTH)(x))
+        mu = nn.Dense(self.latent_dim)(x)
+        log_std = nn.Dense(self.latent_dim,
+                           bias_init=nn.initializers.constant(LOG_STD_BIAS_INIT))(x)
+        return mu, log_std
+
+
+class _Decoder(nn.Module):
+    """``(B, latent_dim)`` → ``(B, 28·28)`` Bernoulli probabilities."""
+    ch: int
+
+    @nn.compact
+    def __call__(self, z):
+        up = (STRIDE, STRIDE)
+        x = nn.Dense(TRUNK_WIDTH)(z)
+        x = nn.relu(nn.Dense(TRUNK_WIDTH)(x))
+        x = nn.relu(nn.Dense(7 * 7 * self.ch * 2)(x))
+        x = x.reshape((-1, 7, 7, self.ch * 2))
+        x = nn.relu(nn.ConvTranspose(self.ch, KERNEL, strides=up, padding="SAME")(x))  # 14
+        x = nn.ConvTranspose(1, KERNEL, strides=up, padding="SAME")(x)                 # 28
+        return jax.nn.sigmoid(5.0 * x).reshape((z.shape[0], -1))
 
 
 class VAE(nn.Module):
-    """Convolutional VAE for square grayscale frames (`img_size` 28, 64 or 128).
-
-    `n_frames=1` (default): single-frame encoder + single-frame decoder.
-    `n_frames=K>1`: encoder sees K stacked frames and the decoder reconstructs
-    the whole K-frame window, so the latent must encode motion (velocity), not
-    just the latest pose.
-    """
-    latent_dim: int = DEFAULT_LATENT_DIM
-    ch: int = ENCODER_CHANNELS
-    n_frames: int = DEFAULT_N_FRAMES
-    img_size: int = DEFAULT_IMG_SIZE
+    latent_dim: int = 2
+    ch: int = 32
 
     def setup(self):
-        if self.img_size not in SUPPORTED_IMG_SIZES:
-            raise ValueError(f"img_size must be 28, 64 or 128, got {self.img_size}")
-        self.encoder = _Encoder(self.latent_dim, self.ch, self.n_frames, self.img_size)
-        self.decoder = _Decoder(self.ch, self.n_frames, self.img_size)
+        self.encoder = _Encoder(self.latent_dim, self.ch)
+        self.decoder = _Decoder(self.ch)
 
     def __call__(self, x, z_rng):
         mu, log_std = self.encoder(x)
@@ -90,88 +81,44 @@ class VAE(nn.Module):
     def decode(self, z):
         return self.decoder(z)
 
+    def init_params(self, seed=0):
+        rng = jax.random.PRNGKey(seed)
+        return self.init({"params": rng}, jnp.ones((1, SIZE, SIZE)), rng)
 
-def _elbo_loss(params, model, batch, target, z_rng, beta):
-    """ELBO. `batch` is the encoder input (window or single frame); `target`
-    is what the decoder must reconstruct — the full input (the whole K-frame
-    window for multi-frame VAEs)."""
-    recon, mu, log_std = model.apply(params, batch, z_rng)
-    log_std = jnp.clip(log_std, *LOG_STD_CLIP)
+
+def bernoulli_nll(recon, target):
+    """Reconstruction cross-entropy per frame, ``(B,)``."""
     flat = target.reshape(target.shape[0], -1)
     p = jnp.clip(recon, *PROB_CLIP)
-    bce = -jnp.sum(flat * jnp.log(p) + (1 - flat) * jnp.log(1 - p), axis=-1)
+    return -jnp.sum(flat * jnp.log(p) + (1 - flat) * jnp.log(1 - p), axis=-1)
+
+
+def _elbo_loss(params, model, batch, z_rng, beta):
+    recon, mu, log_std = model.apply(params, batch, z_rng)
+    log_std = jnp.clip(log_std, *LOG_STD_CLIP)
     kl = -0.5 * jnp.sum(1 + 2 * log_std - mu ** 2 - jnp.exp(2 * log_std), axis=-1)
-    return jnp.mean(bce + beta * kl)
+    return jnp.mean(bernoulli_nll(recon, batch) + beta * kl)
 
 
-def train_vae(
-    images: np.ndarray,
-    *,
-    config: VAETrainingConfig | None = None,
-    latent_dim: int = VAETrainingConfig.latent_dim,
-    ch: int = VAETrainingConfig.ch,
-    n_frames: int = VAETrainingConfig.n_frames,
-    img_size: int = VAETrainingConfig.img_size,
-    epochs: int = VAETrainingConfig.epochs,
-    batch_size: int = VAETrainingConfig.batch_size,
-    lr: float = VAETrainingConfig.lr,
-    beta: float = VAETrainingConfig.beta,
-    beta_start: float = VAETrainingConfig.beta_start,
-    beta_warmup: int = VAETrainingConfig.beta_warmup,
-    seed: int = VAETrainingConfig.seed,
-    verbose: bool = True,
-    callback: Callable | None = None,
-) -> tuple[VAE, dict]:
-    """Train the VAE (autoencoder ELBO — the decoder reconstructs its input).
-
-    Single-frame: `images` of shape `(N, S, S)` with `S = img_size`.
-    Multi-frame: `images` of shape `(N, K, S, S)` (the windows); the decoder
-    reconstructs the whole K-frame window, so the latent must encode motion.
-    `n_frames` must equal K.
-
-    β anneals `beta_start` → `beta` over the first `beta_warmup` epochs.
-    Large low-contrast frames need a long, low warmup (e.g. `beta_start=0.0,
-    beta_warmup=80`) or the posterior collapses before the encoder locks on.
-
-    Hyperparameters are documented as the fields of
-    :class:`jopa.config.VAETrainingConfig`; passing a preset as ``config``
-    supersedes the individual keywords.
-    """
-    if config is not None:
-        return train_vae(
-            images, verbose=verbose, callback=callback, **config.kwargs())
+def train_vae(images, *, latent_dim=2, ch=32, epochs=200, batch_size=64, lr=1e-3,
+              beta=1.0, beta_start=0.1, beta_warmup=15, seed=0, verbose=True,
+              callback: Callable | None = None) -> tuple[VAE, dict]:
+    """Train on ``images`` ``(N, 28, 28)`` by the ELBO. The KL weight anneals
+    ``beta_start`` → ``beta`` over the first ``beta_warmup`` epochs, so the
+    encoder locks on before the posterior can collapse."""
     images = jnp.asarray(images)
-    S = img_size
-    if n_frames == 1:
-        if images.ndim == 4:
-            if images.shape[1] != 1:
-                raise ValueError(
-                    f"single-frame training expects (N, {S}, {S}) or (N, 1, {S}, {S}), got {images.shape}")
-            images = images[:, 0]
-        elif images.ndim != 3:
-            raise ValueError(
-                f"single-frame training expects (N, {S}, {S}), got {images.shape}")
-    elif images.ndim != 4 or images.shape[1] != n_frames:
-        raise ValueError(
-            f"n_frames={n_frames} expects (N, {n_frames}, {S}, {S}), got {images.shape}")
-    if images.shape[-1] != S or images.shape[-2] != S:
-        raise ValueError(f"img_size={S} expects {S}×{S} frames, got {images.shape}")
-
-    model = VAE(latent_dim=latent_dim, ch=ch, n_frames=n_frames, img_size=S)
+    if images.shape[1:] != (SIZE, SIZE):
+        raise ValueError(f"expected (N, {SIZE}, {SIZE}) frames, got {images.shape}")
+    model = VAE(latent_dim=latent_dim, ch=ch)
     rng = jax.random.PRNGKey(seed)
     rng, init_rng, z_rng = jax.random.split(rng, 3)
-    init_input = (jnp.ones((1, S, S)) if n_frames == 1
-                  else jnp.ones((1, n_frames, S, S)))
-    params = model.init({"params": init_rng}, init_input, z_rng)
-
+    params = model.init({"params": init_rng}, jnp.ones((1, SIZE, SIZE)), z_rng)
     tx = optax.adam(lr)
     opt_state = tx.init(params)
 
     @jax.jit
-    def step(params, opt_state, batch, target, z_rng, beta):
-        loss, grads = jax.value_and_grad(_elbo_loss)(
-            params, model, batch, target, z_rng, beta,
-        )
+    def step(params, opt_state, batch, z_rng, beta):
+        loss, grads = jax.value_and_grad(_elbo_loss)(params, model, batch, z_rng, beta)
         updates, opt_state = tx.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), opt_state, loss
 
@@ -179,18 +126,33 @@ def train_vae(
     pbar = tqdm(range(1, epochs + 1), desc="VAE", disable=not verbose)
     for epoch in pbar:
         rng, perm_rng = jax.random.split(rng)
-        idx = jax.random.permutation(perm_rng, n)
-        imgs = images[idx]
+        imgs = images[jax.random.permutation(perm_rng, n)]
         beta_t = min(beta, beta_start + (beta - beta_start) * (epoch - 1) / max(beta_warmup, 1))
         losses = []
         for i in range(0, n, batch_size):
             rng, z_rng = jax.random.split(rng)
-            batch = imgs[i : i + batch_size]
-            params, opt_state, loss = step(
-                params, opt_state, batch, batch, z_rng, beta_t,
-            )
+            params, opt_state, loss = step(params, opt_state, imgs[i:i + batch_size],
+                                           z_rng, beta_t)
             losses.append(float(loss))
         pbar.set_postfix(loss=f"{np.mean(losses):.1f}", beta=f"{beta_t:.2f}")
         if callback is not None:
             callback(epoch, params, float(np.mean(losses)))
     return model, params
+
+
+def save_params(params, path: str | Path):
+    with open(str(path), "wb") as f:
+        f.write(serialization.to_bytes(params))
+
+
+def load_params(model: VAE, path: str | Path) -> dict:
+    """Read a `save_params` checkpoint; rejects one written for another shape."""
+    template = model.init_params()
+    with open(str(path), "rb") as f:
+        loaded = serialization.from_bytes(template, f.read())
+    def shapes(tree):
+        return [np.shape(x) for x in jax.tree.leaves(tree)]
+    if (jax.tree.structure(loaded) != jax.tree.structure(template)
+            or shapes(loaded) != shapes(template)):
+        raise ValueError(f"checkpoint {path} does not match {model}")
+    return loaded

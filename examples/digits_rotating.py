@@ -9,6 +9,13 @@ Matches the RxInfer.jl example:
 import argparse
 import os
 
+import jax.numpy as jnp
+import numpy as np
+
+from examples.digits_data import load_mnist, rotating_mnist, rotation_sequence
+from jopa import Block, JointModel, LearnedLinear, VAEObservation
+from jopa.nn import VAE, load_params, save_params, train_vae
+
 _p = argparse.ArgumentParser(description=__doc__)
 _p.add_argument("--smoke", action="store_true",
                 help="Tiny end-to-end configuration, for CI.")
@@ -16,14 +23,6 @@ _p.add_argument("--checkpoint-dir", default=None)
 _p.add_argument("--output-dir", default=None)
 args = _p.parse_args()
 SMOKE = args.smoke
-
-import jax.numpy as jnp
-import numpy as np
-
-from examples.digits_data import load_mnist, rotating_mnist, rotation_sequence
-from jopa.blocks import Block, Frozen, JointModel, LearnedLinear
-from jopa.distributions import Gaussian
-from jopa.nn.vae import VAE, load_params, make_encode_decode, save_params, train_vae
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKPOINTS = args.checkpoint_dir or os.path.join(ROOT, "checkpoints")
@@ -51,7 +50,7 @@ except FileNotFoundError:
     save_params(params, vae_path)
     print(f"Saved VAE to {vae_path}")
 
-vae = make_encode_decode(model, params)
+sensor = VAEObservation(model, params)
 
 n_observed = 6 if SMOKE else 100
 n_predicted = 2 if SMOKE else 100
@@ -63,25 +62,23 @@ base_img = all_imgs[digit_idx]
 
 sequence = [jnp.array(f) for f in rotation_sequence(base_img, n_observed, step_deg=step_deg)]
 
-def _vae_msg(image):
-    mu, log_std = vae.encode(image)
-    lam = jnp.diag(1.0 / jnp.exp(2.0 * log_std))
-    return Gaussian(eta=lam @ mu, lam=lam)
-
 print(f"Running inference ({n_observed} observed + {n_predicted} predicted) …")
-block = Block("z", LearnedLinear(dim=4, n_iterations=50),
-              observe=Frozen(_vae_msg, vae.decode))
+block = Block("z", LearnedLinear(dim=4, n_iterations=50), observe=sensor)
 model = JointModel([block])
 model.learn([{"z": sequence}])
 out = model.smooth({"z": sequence}, n_predict=n_predicted)["z"]
 
-H = block.transition.A
-angle = float(jnp.arctan2(H[1, 0], H[0, 0]) * 180 / jnp.pi)
-det = float(jnp.linalg.det(H))
-
-print(f"\nLearned transition matrix:\n{H}")
-print(f"Rotation angle per step: {angle:.2f}°  (expected: {step_deg:.2f}°)")
-print(f"Determinant: {det:.4f}  (ideal: 1.0)")
+# Score the forecast on the true continuation of the rotation, against the
+# trivial forecast "the last observed frame persists".
+future = np.stack(rotation_sequence(base_img, n_observed + n_predicted,
+                                    step_deg=step_deg))[n_observed:].reshape(n_predicted, -1)
+forecast = np.stack([np.asarray(p).reshape(-1) for p in out["predictions"][n_observed:]])
+err = ((forecast - future) ** 2).mean(1)
+persist = ((np.asarray(sequence[-1]).reshape(-1) - future) ** 2).mean(1)
+print("\nFrame MSE k steps past the last observation (JOPA / last frame persists):")
+for k in (1, 5, 10, 25, 50):
+    if k <= n_predicted:
+        print(f"  k={k:2d}  {err[k - 1]:.3f} / {persist[k - 1]:.3f}")
 
 try:
     import matplotlib.pyplot as plt

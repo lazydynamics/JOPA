@@ -53,6 +53,30 @@ def test_agent_reaches_and_holds_double_integrator():
     assert float(agent.last_action_cov[0, 0]) > 0
 
 
+def test_agent_online_updates_keep_offline_evidence_and_count_once():
+    """Online refits condition the offline posterior on new transitions only:
+    with forget=1, q(W)'s degrees of freedom never drop below the offline fit
+    and grow by at most one per step taken."""
+    rng = np.random.RandomState(4)
+    A = np.array([[1.0, 0.1], [0.0, 1.0]])
+    B = np.array([[0.0], [0.1]])
+    model = _warm_model(A, B, rng)
+    tr = model.blocks[0].transition
+    offline_df = float(tr.q_W.df)
+    agent = Agent(model, horizon=8, forget=1.0, u_clip=None,
+                  relin_surprise=0.0, min_excitation=0.0)
+    agent.goal(np.array([1.0, 0.0]))
+    x = np.array([0.0, 0.0])
+    dfs = []
+    for _ in range(40):
+        u = agent.step(x)
+        x = A @ x + (B @ u).ravel() + 0.001 * rng.randn(2)
+        dfs.append(float(tr.q_W.df))
+    assert min(dfs) >= offline_df
+    assert dfs[-1] > offline_df                       # it did learn online
+    assert dfs[-1] - offline_df <= 40 - 1             # each transition once
+
+
 def test_agent_goal_switch_clears_regime():
     rng = np.random.RandomState(1)
     A = np.array([[1.0, 0.1], [0.0, 1.0]])
@@ -86,12 +110,3 @@ def test_agent_requires_goal_and_learned_control():
                               observe=Frozen(_msg))])
     with pytest.raises(ValueError):
         Agent(fresh)
-
-
-def test_agent_rejects_unknown_goal_schedule():
-    rng = np.random.RandomState(31)
-    A = np.array([[1.0, 0.1], [0.0, 1.0]])
-    B = np.array([[0.0], [0.1]])
-    model = _warm_model(A, B, rng)
-    with pytest.raises(ValueError, match="goal_schedule"):
-        Agent(model, goal_schedule="distance-magic")

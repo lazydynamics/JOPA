@@ -1,10 +1,10 @@
 """Render the JOPA hero animation: message passing, and what uncertainty buys.
 
 Every number drawn is produced by the library — conjugate system
-identification, forward/backward message passing, and exact action inference
-on the same factor graph. Nothing is scripted.
+identification, smoothing and prediction, and action inference on the same
+factor graph. Nothing is scripted.
 
-    python examples/message_passing_animation.py --out docs/hero.gif
+    uv run python figures/hero.py --out assets/hero.gif
 """
 from __future__ import annotations
 
@@ -92,9 +92,9 @@ class Estimation:
 def estimate(transition, rng, steps=44, observed=26):
     """Smooth the observed prefix and predict the unobserved tail.
 
-    The same public call the digits examples use: `smooth` runs one
-    forward-backward sweep, and `n_predict` extends the chain past the last
-    observation, so prediction is the same operation as smoothing.
+    The same public call the digits example uses: `smooth` runs one
+    forward-backward sweep over the observations, and `n_predict` rolls the
+    posterior predictive forward from the last smoothed belief.
     """
     truth, observations, controls = rollout(rng, steps)
     precision = 1.0 / np.array([POSITION_NOISE, VELOCITY_NOISE]) ** 2
@@ -130,9 +130,7 @@ def control(transition, rng, trust_noise, label, steps=60, goal=1.0):
     ])
     agent = Agent(model, horizon=12, action_precision=0.05,
                   goal_precision=np.array([160.0, 12.0]),
-                  goal_schedule="stage", u_clip=1.0,
-                  relin_surprise=1e9, adapt_hold=False,
-                  condition_on_estimate=True, plan_precision_scale=1e3,
+                  u_clip=1.0, relin_surprise=1e9,
                   track_uncertainty=True)
     agent.goal(np.array([goal, 0.0]))
     error, belief_std, action_std, applied = [], [], [], []

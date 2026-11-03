@@ -5,6 +5,8 @@ When u=None, reduces to the standard y ~ N(A·x, W⁻¹).
 
 Structured factorisation: q(y,x) q(a) q(b) q(W).
 """
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 
@@ -65,6 +67,7 @@ class CTCache:
     bodies without re-tracing on every VMP iteration.
     """
     __slots__ = (
+        "EW_inv",
         "EaaT",
         "EbbT",
         "Va",
@@ -89,7 +92,10 @@ class CTCache:
 
         self.mA = mA
         self.mW = mW
-        self.mW_inv = _solve_matrix(mW)
+        self.mW_inv = q_W.inv_scale / q_W.df          # E[W]⁻¹, exact
+        # E[W⁻¹] = S/(ν−d−1) exists only for ν > d+1; below that it is
+        # unbounded, so the denominator is clamped at 1.
+        self.EW_inv = q_W.inv_scale / jnp.maximum(q_W.df - dy - 1, 1.0)
         self.Va = Va
         self.ma = ma
         self.EaaT = jnp.outer(ma, ma) + Va        # E[a aᵀ]
@@ -113,8 +119,8 @@ class CTCache:
 
     def tree_flatten(self):
         children = (
-            self.mA, self.mW, self.mW_inv, self.Va, self.ma, self.EaaT,
-            self.mB, self.Vb, self.mb, self.EbbT,
+            self.mA, self.mW, self.mW_inv, self.EW_inv, self.Va, self.ma,
+            self.EaaT, self.mB, self.Vb, self.mb, self.EbbT,
         )
         aux_data = (self.dy, self.dx, self.du)
         return children, aux_data
@@ -122,8 +128,8 @@ class CTCache:
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         obj = cls.__new__(cls)
-        (obj.mA, obj.mW, obj.mW_inv, obj.Va, obj.ma, obj.EaaT,
-         obj.mB, obj.Vb, obj.mb, obj.EbbT) = children
+        (obj.mA, obj.mW, obj.mW_inv, obj.EW_inv, obj.Va, obj.ma,
+         obj.EaaT, obj.mB, obj.Vb, obj.mb, obj.EbbT) = children
         obj.dy, obj.dx, obj.du = aux_data
         return obj
 
@@ -136,14 +142,51 @@ class CTCache:
 def ct_forward(m_x: Gaussian, c: CTCache, u=None) -> Gaussian:
     """Forward message through CT (structured :y rule).
 
-    Predictive distribution for x[t] given the message about x[t-1].
+    Integrates x out of  m_x(x) · exp E_q(a)q(W)[log f(y, x)].  The averaged
+    factor carries the quadratic  xᵀ C x  from the uncertainty in A — the same
+    term `ct_backward` and `ct_marginal_yx` carry — so α·β·obs is the VMP
+    marginal q(x).  With Λ̃ = Λx + C:
+
+        Vy = mA Λ̃⁻¹ mAᵀ + E[W]⁻¹,   my = mA Λ̃⁻¹ ηx + mB u.
+
+    This is a VMP message, not a predictive: C shrinks it toward the origin.
+    Use `ct_predict` to forecast.
+    """
+    lam_x = m_x.lam + _va_contraction(c.mW, c.Va, c.dy, c.dx)
+    G = c.mA @ _solve_matrix(lam_x)
+    my = G @ m_x.eta
+    if u is not None and c.mB is not None:
+        my = my + c.mB @ u
+    Vy = G @ c.mA.T + c.mW_inv
+    Ly = _solve_matrix(0.5 * (Vy + Vy.T))
+    return Gaussian(eta=Ly @ my, lam=Ly)
+
+
+# ---------------------------------------------------------------------------
+# Predictive  p(y | m_x) = ∫ f(y | x, A, B, W) m_x(x) q(A) q(B) q(W)
+# ---------------------------------------------------------------------------
+
+def ct_predict(m_x: Gaussian, c: CTCache, u=None) -> Gaussian:
+    """Posterior predictive for x[t+1], moment-matched to a Gaussian.
+
+    Unlike `ct_forward` this averages the transition over q(A, B, W) instead
+    of averaging its log, so parameter uncertainty widens the forecast:
+
+        Vy = mA Vx mAᵀ + E_Va[A M Aᵀ] + E_Vb[B u uᵀ Bᵀ] + E[W⁻¹],
+        M  = Vx + mx mxᵀ.
+
+    This is what filtering and rollouts need; it is not a VMP message and
+    must not be used inside the learning sweep.
     """
     mx, Vx = gaussian_mean_cov(m_x)
     my = c.mA @ mx
+    Vy = (c.mA @ Vx @ c.mA.T
+          + _E_AMA(c.Va, Vx + jnp.outer(mx, mx), c.dy, c.dx)
+          + c.EW_inv)
     if u is not None and c.mB is not None:
         my = my + c.mB @ u
-    Vy = c.mA @ Vx @ c.mA.T + c.mW_inv
-    Ly = _solve_matrix(Vy)
+        Vy = Vy + _E_AMA(c.Vb, jnp.outer(u, u), c.dy, c.du)
+    Ly = _solve_matrix(0.5 * (Vy + Vy.T))
     return Gaussian(eta=Ly @ my, lam=Ly)
 
 
@@ -243,7 +286,7 @@ def ct_message_b(q_yx: Gaussian, c: CTCache, u: jnp.ndarray) -> Gaussian:
     Λ_b = mW^T ⊗ (u uᵀ).
     """
     dy = c.dy
-    m_yx, V_yx = gaussian_mean_cov(q_yx)
+    m_yx, _ = gaussian_mean_cov(q_yx)
     my, mx = m_yx[:dy], m_yx[dy:]
 
     # Residual after removing state dynamics
@@ -270,7 +313,7 @@ def ct_message_u(q_yx: Gaussian, c: CTCache) -> Gaussian:
     Λ_u  = Bᵀ · mW · B
     """
     dy = c.dy
-    m_yx, V_yx = gaussian_mean_cov(q_yx)
+    m_yx, _ = gaussian_mean_cov(q_yx)
     my, mx = m_yx[:dy], m_yx[dy:]
 
     r = my - c.mA @ mx                             # E[y - Ax]
@@ -314,3 +357,60 @@ def ct_message_W(q_yx: Gaussian, c: CTCache, u=None) -> jnp.ndarray:
         delta = delta + _E_AMA(c.EbbT, uu, dy, c.du)
 
     return 0.5 * (delta + delta.T)               # enforce symmetry
+
+
+# ---------------------------------------------------------------------------
+# Parameter messages from summed moments
+# ---------------------------------------------------------------------------
+
+class CTStats(NamedTuple):
+    """Second moments of q(y, x) and the input u, summed over transitions.
+
+    The :a, :b and :W messages are linear in these, so a batch of transitions
+    is summarised before any d²×d² Kronecker product is formed: memory and
+    work for the parameter update no longer grow with the number of
+    transitions. ``xu``, ``yu``, ``uu`` are None without an input.
+    """
+    n: jnp.ndarray
+    xx: jnp.ndarray     # Σ E[x xᵀ]
+    yy: jnp.ndarray     # Σ E[y yᵀ]
+    yx: jnp.ndarray     # Σ E[y xᵀ]
+    xu: jnp.ndarray | None = None     # Σ E[x] uᵀ
+    yu: jnp.ndarray | None = None     # Σ E[y] uᵀ
+    uu: jnp.ndarray | None = None     # Σ u uᵀ
+
+
+def ct_moments(q_yx: Gaussian, c: CTCache, u=None) -> CTStats:
+    """Moments of one transition's joint marginal q(y, x) (n = 1)."""
+    dy = c.dy
+    m, V = gaussian_mean_cov(q_yx)
+    my, mx = m[:dy], m[dy:]
+    stats = CTStats(
+        n=jnp.ones(()),
+        xx=V[dy:, dy:] + jnp.outer(mx, mx),
+        yy=V[:dy, :dy] + jnp.outer(my, my),
+        yx=V[:dy, dy:] + jnp.outer(my, mx))
+    if u is None:
+        return stats
+    return stats._replace(xu=jnp.outer(mx, u), yu=jnp.outer(my, u),
+                          uu=jnp.outer(u, u))
+
+
+def ct_parameter_messages(s: CTStats, c: CTCache):
+    """Summed :a, :W (Δ) and :b messages — the sums of `ct_message_a`,
+    `ct_message_W` and `ct_message_b` over the transitions in ``s``."""
+    has_u = s.uu is not None and c.mB is not None
+    Exy = s.yx.T                                   # Σ E[x yᵀ]
+    if has_u:
+        Exy = Exy - s.xu @ c.mB.T                  # Σ E[x (y − Bu)ᵀ]
+    msg_a = Gaussian(eta=(Exy @ c.mW).T.ravel(), lam=jnp.kron(c.mW.T, s.xx))
+
+    G2 = s.yx @ c.mA.T
+    delta = s.yy - (G2 + G2.T) + _E_AMA(c.EaaT, s.xx, c.dy, c.dx)
+    msg_b = None
+    if has_u:
+        rBu = (s.yu - c.mA @ s.xu) @ c.mB.T        # Σ E[y − Ax] (Bu)ᵀ
+        delta = delta - rBu - rBu.T + _E_AMA(c.EbbT, s.uu, c.dy, c.du)
+        Eur = s.yu.T - s.xu.T @ c.mA.T             # Σ u E[y − Ax]ᵀ
+        msg_b = Gaussian(eta=(Eur @ c.mW).T.ravel(), lam=jnp.kron(c.mW.T, s.uu))
+    return msg_a, 0.5 * (delta + delta.T), msg_b

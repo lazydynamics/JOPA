@@ -15,11 +15,6 @@ _CACHE = os.path.expanduser("~/.cache/jopa")
 # rather than global because rotation moves mass off-canvas.
 _BINARIZE_THRESHOLD = 0.5
 _FULL_TURN_DEG = 360.0
-# Piecewise-constant angular velocities (deg/step) of the controlled demo
-# sequence: distinct regimes including rest and both directions, so a learned
-# B is identifiable. Each segment is jittered by this standard deviation.
-_SEGMENT_SPEEDS_DEG = (5.0, -3.0, 8.0, 0.0, -5.0)
-_SEGMENT_JITTER_DEG = 0.3
 
 
 def load_mnist():
@@ -143,51 +138,3 @@ def rotating_mnist(
         images = (images > threshold * images.max()).astype(np.float32)
 
     return images, labels
-
-
-def make_controlled_sequence(
-    digit_idx: int = 0,
-    n_frames: int = 100,
-    do_binarize: bool = True,
-    threshold: float = _BINARIZE_THRESHOLD,
-    seed: int = 0,
-):
-    """Generate a rotation sequence driven entirely by control actions.
-
-    Each action u[t] is an angular velocity in degrees per step. The digit
-    angle is the cumulative sum of u[t]; there is no autonomous rotation.
-
-    Returns
-    -------
-    frames : list of (28, 28) float32 arrays
-    actions : list of (1,) float32 arrays — angular velocities (deg/step)
-    angles : (n_frames,) float64 array of cumulative angles in degrees
-    """
-    rng = np.random.RandomState(seed)
-    imgs, _ = load_mnist()
-    img = imgs[digit_idx]
-
-    n_trans = n_frames - 1
-
-    segment_len = n_trans // len(_SEGMENT_SPEEDS_DEG)
-    velocities = np.zeros(n_trans)
-    for i, speed in enumerate(_SEGMENT_SPEEDS_DEG):
-        start = i * segment_len
-        end = min(start + segment_len, n_trans)
-        velocities[start:end] = (
-            speed + rng.randn(end - start) * _SEGMENT_JITTER_DEG)
-
-    angle_deg = np.zeros(n_frames)
-    for i in range(1, n_frames):
-        angle_deg[i] = angle_deg[i - 1] + velocities[i - 1]
-
-    frames = []
-    for angle in angle_deg:
-        rot = rotate_image(img, angle)
-        if do_binarize:
-            rot = binarize(rot, threshold)
-        frames.append(rot.astype(np.float32))
-
-    actions = [np.array([v], dtype=np.float32) for v in velocities]
-
-    return frames, actions, angle_deg
