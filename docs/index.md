@@ -136,8 +136,9 @@ The rules themselves are not new. They were derived and integrated into
   and planning are each `q(·)` over a different subset of the same graph — no
   reward shaping, policy networks, or replay-buffer retraining.
 - **Linear-Gaussian latent dynamics** with a conjugate posterior; learned
-  features where a linear model cannot predict (`NeuralLinear`). The encoder and
-  the features are the only gradient-trained components.
+  features where a linear model cannot predict (`NeuralLinear`). The observation
+  model (the VAE's encoder and decoder) and the `NeuralLinear` network are the
+  only gradient-trained components.
 - **Planning is exact inference.** With linear dynamics the joint over states
   and actions is Gaussian, so the action posterior is one elimination sweep;
   nonlinear dynamics and actuator limits are relinearized and projected

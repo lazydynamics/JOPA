@@ -59,10 +59,11 @@ transition, and `JointModel` answers one of four questions: `learn`, `smooth`,
 
 **Offline.** Train a sensor by gradient descent — with the `NeuralLinear`
 network, the only gradients in the system — and encode the data once. Then fit
-the transition posterior by message passing (`q(A,B,W)` for `LearnedLinear`,
-the matrix-normal last layer for `NeuralLinear`): each encoded observation
+`q(A,B,W)` of a `LearnedLinear` by message passing: each encoded observation
 becomes a message, forward–backward smooths the chain, and the accumulated
-messages update the parameter posteriors.
+messages update the parameter posteriors. A `NeuralLinear` instead trains its
+features on rollouts and conditions its matrix-normal last layer directly on
+the encoded transitions (`fit_neural_linear`).
 
 **Online.** Every step is inference on the same graph: the **state** is
 filtered, the **parameters** are updated by conjugate VMP, and the **actions**
@@ -84,7 +85,7 @@ wire the shoulder actuator backwards from the first step.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/lewm_reacher_dark.png">
-    <img src="assets/lewm_reacher_light.png" width="100%" alt="Reversed shoulder: JOPA 80.4%, LeWM + gain (Adam) 70.8%, LeWM fine-tuning 39.6%, LeWM + gain (Laplace) 27.6%, both unadapted models under 7%. Healthy arm: JOPA 97.2%, LeWM 99.6%. Solve time per replan: JOPA 0.25 s, LeWM 1.99 s.">
+    <img src="assets/lewm_reacher_light.png" width="100%" alt="Reversed shoulder: JOPA 80.4%, LeWM + gain (Adam) 70.8%, LeWM fine-tuning 39.6%, LeWM + gain (Laplace) 27.6%, both unadapted models under 7%. Healthy arm: JOPA 97.2%, LeWM 99.6%. Solve time per replan, healthy arm: JOPA 0.25 s, LeWM 1.99 s.">
   </picture>
 </p>
 

@@ -120,7 +120,7 @@ def figure(results, out: Path):
         t.set_xticks([0, 1, 2])
         t.set_yticks(range(len(nominal)), [""] * len(nominal))
         t.set_title("Solve time", **title)
-        t.set_xlabel("median s per replan")
+        t.set_xlabel("median s per replan\n(healthy arm)")
 
         fig.tight_layout(w_pad=1.5)
         fig.savefig(out / f"lewm_reacher_{theme}.png", dpi=200, facecolor=c["surface"])
