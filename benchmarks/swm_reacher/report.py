@@ -119,7 +119,7 @@ def figure(results, out: Path):
         bars(t, nominal, lambda r: r["median_solve_s"], lambda v: f"{v:.2f} s", 2.0)
         t.set_xticks([0, 1, 2])
         t.set_yticks(range(len(nominal)), [""] * len(nominal))
-        t.set_title("Planning time", **title)
+        t.set_title("Solve time", **title)
         t.set_xlabel("median s per replan")
 
         fig.tight_layout(w_pad=1.5)

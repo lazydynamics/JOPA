@@ -5,7 +5,7 @@
 #   fault:    jopa_fault  jopa_frozen  lewm_frozen  lewm_finetune  lewm_gain_adam  lewm_gain_laplace
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BENCH="${BENCH:-$HOME/jopa-bench}"
+BENCH="$(cd "${BENCH:-$HOME/jopa-bench}" && pwd)"
 RUNS="${RUNS:-$BENCH/runs}"
 MODEL="${MODEL:-$RUNS/jopa_nl.pkl}"
 SEEDS="${SEEDS:-42 1 2 3 4}"

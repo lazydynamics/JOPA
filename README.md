@@ -84,7 +84,7 @@ wire the shoulder actuator backwards from the first step.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/lewm_reacher_dark.png">
-    <img src="assets/lewm_reacher_light.png" width="100%" alt="Reversed shoulder: JOPA 80.4%, LeWM + gain (Adam) 70.8%, LeWM fine-tuning 39.6%, LeWM + gain (Laplace) 27.6%, both unadapted models under 7%. Healthy arm: JOPA 97.2%, LeWM 99.6%. Planning: JOPA 0.25 s, LeWM 1.99 s per replan.">
+    <img src="assets/lewm_reacher_light.png" width="100%" alt="Reversed shoulder: JOPA 80.4%, LeWM + gain (Adam) 70.8%, LeWM fine-tuning 39.6%, LeWM + gain (Laplace) 27.6%, both unadapted models under 7%. Healthy arm: JOPA 97.2%, LeWM 99.6%. Solve time per replan: JOPA 0.25 s, LeWM 1.99 s.">
   </picture>
 </p>
 

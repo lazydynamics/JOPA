@@ -41,8 +41,8 @@ estimates. The filter weighs every observation by its precision; the planner is
 certainty-equivalent, rolling the posterior-mean dynamics forward from the
 filtered mean. The hero animation (`figures/hero.py`) runs the same controller
 with a sensor that overstates its precision by 144× (its noise sd by 12×): the
-filter trusts the noise, and the plan spends 1.9× the action for the same
-accuracy.
+filter trusts the sensor's low-noise claim, and the plan spends 1.9× the action
+for the same accuracy.
 
 **Planning is exact inference, not optimization.** Group each time slice as
 `s_t = [x_t; u_t]` and the joint is a Gaussian chain, so the α/β recursions that

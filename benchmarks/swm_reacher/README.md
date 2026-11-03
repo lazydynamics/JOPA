@@ -23,7 +23,8 @@ plan synchronized off the GPU. JOPA's time covers encoding, the `q(A)` update
 and the plan; LeWM's is the harness's CEM timer (encoding and the plan), so the
 adaptive LeWM rows exclude their fine-tuning or gain step and are lower bounds. Reruns of identical code differ by a few
 episodes per seed (GPU rounding, amplified by the closed loop): seed 42 of the
-fault row gave 78 and 74, and three full runs of it averaged 77.2–80.4 %. JOPA
+fault row gave 78 and 74, and two full runs of the final solver averaged
+78.8 % and 80.4 % (`LOG.md`). JOPA
 runs the same solver in both settings: it adapts `q(A)` online with the
 ContinuousTransition rules (`jopa.Actuator`) and plans through `E[A]`.
 

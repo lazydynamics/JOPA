@@ -8,8 +8,10 @@ LEWM_COMMIT=8edfeb336732b5f3ce7b8b210d0ba370a09e2cac
 SWM_COMMIT=21446f1ede6d5284e981bd7b47f432b994e6d812
 JOPA_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BENCH="${BENCH:-$HOME/jopa-bench}"
+mkdir -p "$BENCH"
+BENCH="$(cd "$BENCH" && pwd)"               # absolute: the scripts change directory
 export STABLEWM_HOME="$BENCH/swm_home"
-mkdir -p "$BENCH" "$STABLEWM_HOME"
+mkdir -p "$STABLEWM_HOME"
 cd "$BENCH"
 
 pin() {  # pin <url> <dir> <commit>
