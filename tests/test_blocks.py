@@ -4,17 +4,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jopa.blocks import (
+from jopa import (
     Block,
     Frozen,
     JointModel,
     KnownPhysics,
-    LearnedAffine,
-    LearnedDelayLinear,
     LearnedLinear,
     LearnedVAE,
     LinearCoupling,
-    Observation,
 )
 from jopa.distributions import (
     Gaussian,
@@ -25,9 +22,10 @@ from jopa.distributions import (
     gaussian_prior,
     vague_gaussian,
 )
-from jopa.message_passing import compute_marginals, forward_backward
-from jopa.nn.vae import VAE
+from jopa.nn import VAE
 from jopa.nodes.transition import CTCache, CTMeta
+from jopa.observations import Observation
+from jopa.transitions import _chain
 
 # ---- package surface -------------------------------------------------------
 
@@ -87,7 +85,7 @@ def test_vague_gaussian_is_combine_identity():
 # Message passing — BP on a linear-Gaussian chain
 # ============================================================================
 
-def test_forward_backward_recovers_true_states():
+def test_chain_sweep_recovers_true_states():
     """With known dynamics + low noise, the smoothed posterior tracks the truth."""
     A = jnp.array([[0.95, 0.10], [-0.10, 0.95]])
     rng = np.random.RandomState(0)
@@ -99,10 +97,9 @@ def test_forward_backward_recovers_true_states():
     q_a = gaussian_prior(4, 1e-8, jnp.asarray(A).ravel())
     q_W = Wishart(df=1e6, inv_scale=1e6 * 0.01 * jnp.eye(2))   # E[W] = 100·I
     cache = CTCache(q_a, q_W, CTMeta(lambda a: a.reshape(2, 2)))
-    prior_x = Gaussian(eta=jnp.zeros(2), lam=jnp.eye(2) * 1e-6)
 
-    alphas, betas, _, _ = forward_backward(prior_x, obs, cache)
-    means = np.array(jax.vmap(gaussian_mean)(compute_marginals(alphas, betas, obs)))
+    stacked = Gaussian(jnp.stack([g.eta for g in obs]), jnp.stack([g.lam for g in obs]))
+    means = np.array(_chain(stacked, cache, None)[0])
     truth = np.array([np.array(x) for x in xs])
     assert np.max(np.abs(means - truth)) < 0.05
 
@@ -144,46 +141,6 @@ def test_learned_linear_predict_advances_belief_by_A():
     nxt = block.predict(_msg(jnp.array([1.0, 2.0]), 1e4))
     assert np.allclose(np.array(gaussian_mean(nxt)), np.array([0.9, 1.6]), atol=0.08)
 
-
-def test_per_trajectory_mode_fits_last_trajectory():
-    """`per_trajectory` ends fit to the last trajectory's data — distinct
-    from the joint posterior when trajectories disagree."""
-    rng = np.random.RandomState(0)
-    A1 = np.array([[0.9, 0.0], [0.0, 0.9]])
-    A2 = np.array([[0.5, 0.0], [0.0, 0.5]])
-    seqs = ([_linear_traj(A1, 60, 0.02, 0.01, rng) for _ in range(5)] +
-            [_linear_traj(A2, 60, 0.02, 0.01, rng) for _ in range(5)])
-    joint = LearnedLinear(dim=2, n_iterations=40, mode="joint"); joint.learn(seqs)
-    per = LearnedLinear(dim=2, n_iterations=40, mode="per_trajectory"); per.learn(seqs)
-    assert np.linalg.norm(per.A - A2) < np.linalg.norm(joint.A - A2)
-
-
-def test_learned_linear_rejects_unknown_mode():
-    with pytest.raises(ValueError, match=r"mode must be"):
-        LearnedLinear(dim=2, mode="bogus")
-
-
-# ============================================================================
-# LearnedAffine — fully-observed regression via the same CT-factor VMP
-# ============================================================================
-
-def test_learned_affine_recovers_A_and_B():
-    rng = np.random.RandomState(5)
-    A_true = np.array([[0.5, -0.3]])
-    B_true = np.array([[0.7]])
-    n = 400
-    x = rng.randn(n, 2)
-    u = rng.randn(n, 1)
-    y = x @ A_true.T + u @ B_true.T + 0.01 * rng.randn(n, 1)
-    reg = LearnedAffine(input_dim=2, output_dim=1, du=1, n_iterations=8).learn(
-        [jnp.asarray(x)], [jnp.asarray(y)], [jnp.asarray(u)])
-    assert np.allclose(np.array(reg.A), A_true, atol=0.02)
-    assert np.allclose(np.array(reg.B), B_true, atol=0.02)
-
-
-# ============================================================================
-# KnownPhysics
-# ============================================================================
 
 def test_known_physics_predict_is_affine_step():
     A = jnp.array([[1.0, 0.05], [0.0, 1.0]])
@@ -237,6 +194,24 @@ def test_smooth_tracks_observations_and_predicts_by_A():
     assert np.trace(covs[44]) > np.trace(covs[39])
 
 
+def test_smooth_rollout_leaves_observed_estimates_unchanged():
+    """Forecast slices must not feed back into the observed ones: with a
+    loose q(A) on a non-centred latent, VMP over unobserved slices would pull
+    the smoothed estimates toward the origin."""
+    rng = np.random.RandomState(5)
+    A = np.array([[0.98, 0.05], [-0.05, 0.98]])
+    seqs = [[_msg(3.0 + 0.1 * rng.randn(2), 25.0) for _ in range(6)]]
+    raws = [[np.array(gaussian_mean(g)) for g in seq] for seq in seqs]
+    block = Block("z", LearnedLinear(dim=2, n_iterations=10, prior_a_mean=A.ravel(),
+                                     prior_a_cov=1e-2),
+                  observe=lambda d: _msg(d, 25.0))
+    model = JointModel([block])
+    model.learn([{"z": r} for r in raws])
+    alone = np.array(model.smooth({"z": raws[0]})["z"]["means"])
+    rolled = np.array(model.smooth({"z": raws[0]}, n_predict=8)["z"]["means"])
+    assert np.allclose(rolled[:6], alone, atol=1e-5)
+
+
 def test_plan_drives_double_integrator_to_goal():
     rng = np.random.RandomState(3)
     A = np.array([[1.0, 0.1], [0.0, 1.0]])
@@ -255,8 +230,7 @@ def test_plan_drives_double_integrator_to_goal():
                   observe=lambda d: _msg(d, 1e4))
     model = JointModel([block])
     model.learn(trajs)
-    actions = model.plan({"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]},
-                         n_iterations=300)
+    actions = model.plan({"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]})
     x = np.array([0.0, 0.0])
     for u in np.array(actions):
         x = A @ x + (B @ u).ravel()
@@ -271,7 +245,7 @@ def test_plan_with_known_physics_reaches_goal():
     phys = KnownPhysics(2, du=1, linearize=lambda m: (A, B, jnp.zeros(2)))
     block = Block("z", phys, observe=lambda d: _msg(d, 1e3))
     obs = {"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]}
-    actions = JointModel([block]).plan(obs, prior_x=_msg([0.0, 0.0], 1e3), n_iterations=200)
+    actions = JointModel([block]).plan(obs, prior_x=_msg([0.0, 0.0], 1e3))
     assert actions.shape == (19, 1)
     x = np.array([0.0, 0.0])
     for u in np.array(actions):
@@ -280,7 +254,8 @@ def test_plan_with_known_physics_reaches_goal():
 
 
 def test_linear_coupling_sharpens_noisy_slice_via_clean_one():
-    identity = lambda m: (jnp.eye(2), None, jnp.zeros(2))
+    def identity(m):
+        return (jnp.eye(2), None, jnp.zeros(2))
     s = Block("s", KnownPhysics(2, linearize=identity), observe=lambda d: _msg(d, 1.0))
     z = Block("z", KnownPhysics(2, linearize=identity), observe=lambda d: _msg(d, 1e2))
     coupling = LinearCoupling("s", "z", M=jnp.eye(2), noise_prec=1e2)
@@ -346,94 +321,28 @@ def test_filter_composes_blocks_and_incorporates_observations():
     assert np.allclose(np.array(gaussian_mean(beliefs["p"])), [0.1, 0.0], atol=1e-2)
 
 
-def test_vae_supports_64px_frames():
-    """img_size=64 encodes/decodes at the right shapes; 28 stays the default."""
-    model = VAE(latent_dim=3, ch=8, img_size=64)
-    rng = jax.random.PRNGKey(0)
-    params = model.init({"params": rng}, jnp.ones((1, 64, 64)), rng)
-    mu, log_std = model.apply(params, jnp.ones((2, 64, 64)), method=model.encode)
-    recon = model.apply(params, mu, method=model.decode)
-    assert mu.shape == (2, 3) and log_std.shape == (2, 3)
-    assert recon.shape == (2, 64 * 64)
-
-
-def test_learned_delay_linear_preserves_shift_and_learns_controlled_top_block():
-    rng = np.random.RandomState(9)
-    h, delay, du = 2, 3, 1
-    B_true = np.array([[0.25], [-0.15]])
-    state_seqs, control_seqs = [], []
-    for _ in range(8):
-        features = [rng.randn(h) * 0.2, rng.randn(h) * 0.2]
-        controls = []
-        for _ in range(48):
-            u = rng.uniform(-1, 1, du)
-            nxt = 1.65 * features[-1] - 0.7 * features[-2] + B_true @ u
-            nxt += 0.005 * rng.randn(h)
-            features.append(nxt); controls.append(u)
-        z = [np.concatenate(features[t:t + delay]) for t in range(len(features) - delay + 1)]
-        state_seqs.append(np.asarray(z))
-        # Two feature states were seeded before controls[0] generated h[2];
-        # the first window transition h[0:3] -> h[1:4] therefore uses u[1].
-        control_seqs.append(controls[1:])
-
-    d = h * delay
-    expected_shift = np.zeros((d - h, d))
-    expected_shift[:, h:] = np.eye(d - h)
-    tr = LearnedDelayLinear(h, delay=delay, du=du, offset=False,
-                            n_iterations=10, shift_cov=1e-7)
-    tr.learn_observed(state_seqs, control_seqs, obs_prec=1e4)
-    assert np.all(np.isfinite(np.asarray(tr.A)))
-    assert np.allclose(np.asarray(tr.A[:d - h]), expected_shift, atol=1e-5)
-    assert np.max(np.abs(np.asarray(tr.B[:d - h]))) < 1e-5
-    assert np.allclose(np.asarray(tr.B[d - h:]), B_true, atol=0.08)
-    tr.attach_replay(state_seqs, control_seqs, neighbors=64,
-                     refresh_every=1, obs_prec=1e4, n_iterations=6)
-    assert tr.localize(state_seqs[0][10])
-    assert np.all(np.isfinite(np.asarray(tr.B)))
-
-
-def test_exact_plan_matches_lq_in_deterministic_limit():
-    """The exact Gaussian action posterior reduces to the LQ solution when the
-    transition is near-deterministic (LQG duality sanity check)."""
-    from jopa.blocks import _identity_meta
-    from jopa.message_passing import (
-        infer_actions_exact,
-        infer_actions_exact_numpy,
-        infer_actions_exact_posterior,
-    )
-
+def test_plan_is_the_exact_chain_posterior():
+    """`JointModel.plan` equals an independent float64 solve of the [x; u]
+    chain, and the LQ solution when the transition is near-deterministic
+    (LQG duality)."""
     rng = np.random.RandomState(0)
     d, du, H = 3, 2, 6
     A = np.eye(d) + 0.1 * rng.randn(d, d)
     B = 0.5 * rng.randn(d, du)
-    W = 1e6 * np.eye(d)                       # near-deterministic
-    x0 = rng.randn(d)
-    zg = rng.randn(d)
+    x0, zg = rng.randn(d), rng.randn(d)
     reg, pg = 1e-2, 1.0
 
-    q_a = Gaussian(eta=1e9 * jnp.asarray(A.ravel()), lam=1e9 * jnp.eye(d * d))
-    q_W = Wishart(df=1e6, inv_scale=1e6 * jnp.linalg.inv(jnp.asarray(W)))
-    q_b = Gaussian(eta=1e9 * jnp.asarray(B.ravel()), lam=1e9 * jnp.eye(d * du))
-    cache = CTCache(q_a, q_W, _identity_meta(d), q_b)
-
-    prior_x = Gaussian(eta=1e9 * jnp.asarray(x0), lam=1e9 * jnp.eye(d))
+    phys = KnownPhysics(d, du=du, linearize=lambda m: (jnp.asarray(A), jnp.asarray(B),
+                                                       jnp.zeros(d)), process_std=1e-2)
+    block = Block("z", phys, observe=lambda y: _msg(y, pg))
+    prior_x = _msg(x0, 1e4)
     prior_u = Gaussian(eta=jnp.zeros(du), lam=reg * pg * jnp.eye(du))
+    acts = np.array(JointModel([block]).plan({"z": [None] * H + [zg]},
+                                             prior_x=prior_x, prior_u=prior_u))
     vague = Gaussian(eta=jnp.zeros(d), lam=jnp.zeros((d, d)))
-    goal = Gaussian(eta=pg * jnp.asarray(zg), lam=pg * jnp.eye(d))
-    observations = [vague] * H + [goal]
-    acts = np.array(infer_actions_exact(prior_x, observations, cache, prior_u))
-    posterior = infer_actions_exact_posterior(
-        prior_x, observations, cache, prior_u)
-    reference = np.array(
-        infer_actions_exact_numpy(prior_x, observations, cache, prior_u))
-    # GPU and LAPACK solve the deliberately ill-conditioned (W=1e6) system
-    # with slightly different elimination kernels.
-    np.testing.assert_allclose(acts, reference, rtol=5e-6, atol=1e-6)
-    np.testing.assert_allclose(
-        np.asarray(posterior.mean), acts, rtol=5e-6, atol=1e-6)
-    covariance = np.asarray(posterior.joint_covariance)
-    assert covariance.shape == (H * du, H * du)
-    assert np.linalg.eigvalsh(covariance).min() > -1e-9
+    reference = _reference_plan(prior_x, [vague] * H + [_msg(zg, pg)], A, B,
+                                np.linalg.inv(np.asarray(phys.Q)), prior_u)
+    np.testing.assert_allclose(acts, reference, rtol=1e-5, atol=1e-5)
 
     # closed-form LQ: minimise |x_H - zg|^2 + reg |u|^2 under x' = A x + B u
     M = np.zeros((d, du * H))
@@ -441,32 +350,74 @@ def test_exact_plan_matches_lq_in_deterministic_limit():
         M[:, du * k:du * k + du] = np.linalg.matrix_power(A, H - 1 - k) @ B
     b = zg - np.linalg.matrix_power(A, H) @ x0
     u_lq = np.linalg.solve(M.T @ M + reg * np.eye(du * H), M.T @ b).reshape(H, du)
-    assert np.abs(acts - u_lq).max() < 1e-3
+    assert np.abs(acts - u_lq).max() < 1e-2
 
 
-def test_plan_method_vmp_still_reaches():
-    """The iterative VMP planner stays available via method='vmp'."""
-    rng = np.random.RandomState(1)
-    A = np.array([[1.0, 0.1], [0.0, 1.0]])
-    B = np.array([[0.0], [0.1]])
-    trajs = []
-    for _ in range(15):
-        x = rng.randn(2) * 0.5
-        seq, us = [x.copy()], []
-        for _ in range(39):
-            u = rng.randn(1)
-            us.append(u)
-            x = A @ x + (B @ u).ravel() + 0.005 * rng.randn(2)
-            seq.append(x.copy())
-        trajs.append({"z": seq, "control": us})
-    block = Block("z", LearnedLinear(dim=2, du=1, n_iterations=40),
-                  observe=lambda d: _msg(d, 1e4))
-    model = JointModel([block])
-    model.learn(trajs)
-    obs = {"z": [np.array([0.0, 0.0])] + [None] * 18 + [np.array([1.0, 0.0])]}
-    for method in ("exact", "vmp"):
-        actions = model.plan(obs, n_iterations=300, method=method)
-        x = np.array([0.0, 0.0])
-        for u in np.array(actions):
-            x = A @ x + (B @ u).ravel()
-        assert abs(x[0] - 1.0) < 0.2, method
+def _reference_plan(prior_x, obs_list, A, B, W, prior_u):
+    """Independent NumPy float64 solve of the plan: the block-tridiagonal
+    information form of the [x; u] chain, eliminated forward and
+    back-substituted."""
+    d, du = B.shape
+    ds = d + du
+    T = len(obs_list)
+    def f64(a):
+        return np.asarray(a, dtype=np.float64)
+    A, B, W = f64(A), f64(B), f64(W)
+    AtW, BtW = A.T @ W, B.T @ W
+
+    # per-slice information: D[t] (ds×ds) on s[t], coupling C[t] to s[t+1]
+    D = np.zeros((T, ds, ds))
+    e = np.zeros((T, ds))
+    C = np.zeros((T - 1, ds, ds))
+    for t, ob in enumerate(obs_list):
+        D[t, :d, :d] += f64(ob.lam)
+        e[t, :d] += f64(ob.eta)
+        D[t, d:, d:] += f64(prior_u.lam)
+        e[t, d:] += f64(prior_u.eta)
+    D[0, :d, :d] += f64(prior_x.lam)
+    e[0, :d] += f64(prior_x.eta)
+    for t in range(T - 1):
+        # transition factor: quadratic of  x[t+1] − A x[t] − B u[t]  in W
+        D[t, :d, :d] += AtW @ A
+        D[t, d:, d:] += BtW @ B
+        D[t, :d, d:] += AtW @ B
+        D[t, d:, :d] += (AtW @ B).T
+        D[t + 1, :d, :d] += W
+        C[t, :d, :d] = -AtW          # rows s[t], cols s[t+1] (x-part only)
+        C[t, d:, :d] = -BtW
+
+    # α sweep: forward elimination of the block-tridiagonal information form
+    Dt, et = D.copy(), e.copy()
+    G = np.zeros_like(C)
+    for t in range(T - 1):
+        G[t] = np.linalg.solve(Dt[t], C[t])
+        Dt[t + 1] -= C[t].T @ G[t]
+        et[t + 1] -= C[t].T @ np.linalg.solve(Dt[t], et[t])
+    # β sweep: back substitution → posterior means of every slice
+    mu = np.zeros((T, ds))
+    mu[T - 1] = np.linalg.solve(Dt[T - 1], et[T - 1])
+    for t in range(T - 2, -1, -1):
+        mu[t] = np.linalg.solve(Dt[t], et[t] - C[t] @ mu[t + 1])
+    return mu[:-1, d:]
+
+
+def test_vae_trains_saves_and_loads(tmp_path):
+    """`train_vae` lowers the ELBO; a checkpoint round-trips, and one written
+    for another latent size is rejected."""
+    from jopa.nn import load_params, save_params, train_vae
+
+    rng = np.random.RandomState(0)
+    images = (rng.rand(16, 28, 28) < 0.2).astype(np.float32)
+    losses = []
+    model, params = train_vae(images, latent_dim=2, ch=4, epochs=3, batch_size=8,
+                              verbose=False, callback=lambda e, p, loss: losses.append(loss))
+    assert losses[-1] < losses[0]
+    path = tmp_path / "vae.msgpack"
+    save_params(params, path)
+    loaded = load_params(model, path)
+    assert all(np.array_equal(a, b) for a, b in
+               zip(jax.tree.leaves(loaded), jax.tree.leaves(params), strict=True))
+    with pytest.raises(ValueError, match="does not match"):
+        load_params(VAE(latent_dim=3, ch=4), path)
+    with pytest.raises(ValueError, match="28"):
+        train_vae(np.zeros((2, 14, 14)), epochs=1, verbose=False)

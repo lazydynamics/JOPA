@@ -1,5 +1,5 @@
 """Rendering for the JOPA figures. Data comes from
-`message_passing_animation.build`; this module only draws it.
+`hero.build`; this module only draws it.
 
 Art direction: paper ground, flat matte fills, desaturated technical-manual
 palette, one saturated accent reserved for the message in motion. No glow,
@@ -73,7 +73,7 @@ def _draw_graph(ax, layout, active=None, caption="", annotate=True):
     ax.axis("off")
 
     for (sx, sy), (lx, ly), (ox, oy) in zip(
-            layout["states"], layout["likelihoods"], layout["observations"]):
+            layout["states"], layout["likelihoods"], layout["observations"], strict=True):
         ax.plot([sx, lx], [sy, ly], color=RULE, lw=0.9, zorder=1)
         ax.plot([lx, ox], [ly, oy], color=RULE, lw=0.9, zorder=1)
     px, py = layout["parameters"]
@@ -191,7 +191,7 @@ def _draw_control(ax, runs, fraction=1.0):
     colors = (INK, BRICK)
     shown = max(int(np.clip(fraction, 0.0, 1.0) * length), 1)
     curves = []
-    for run, color, label in zip(runs, colors, labels):
+    for run, color, label in zip(runs, colors, labels, strict=True):
         effort = np.cumsum(np.abs(run.control))
         ax.plot(steps[:shown], effort[:shown], color=color, lw=1.7)
         curves.append((effort, color, label))

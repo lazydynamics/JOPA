@@ -1,0 +1,6 @@
+_target_: jopa_solver.JopaSolver
+cost: ???
+model_path: ${oc.env:HOME}/jopa-bench/runs/jopa_nl.pkl
+adapt: false
+device: "cuda"
+seed: ${seed}

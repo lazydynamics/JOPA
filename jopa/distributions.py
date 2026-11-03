@@ -1,4 +1,6 @@
 """Gaussian / Wishart distributions in natural parameter form."""
+from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax.numpy as jnp
@@ -8,6 +10,25 @@ class Gaussian(NamedTuple):
     """Multivariate normal in information form:  η = Λμ,  Λ = Σ⁻¹."""
     eta: jnp.ndarray  # (d,) or (T, d)
     lam: jnp.ndarray  # (d, d) or (T, d, d)
+
+    @classmethod
+    def from_mean(cls, mean, precision) -> Gaussian:
+        """Isotropic (scalar ``precision``) or full-precision Gaussian around ``mean``."""
+        mean = jnp.asarray(mean, jnp.result_type(float))
+        lam = jnp.asarray(precision) * jnp.eye(mean.shape[0]) if jnp.ndim(precision) == 0 \
+            else jnp.asarray(precision)
+        return cls(lam @ mean, lam)
+
+    @property
+    def mean(self):
+        return jnp.linalg.solve(self.lam, self.eta)
+
+    @property
+    def cov(self):
+        return jnp.linalg.inv(self.lam)
+
+    def __mul__(self, other: Gaussian) -> Gaussian:
+        return Gaussian(self.eta + other.eta, self.lam + other.lam)
 
 
 class Wishart(NamedTuple):
@@ -71,3 +92,29 @@ def near_identity_prior(
 
 def wishart_mean(w: Wishart) -> jnp.ndarray:
     return w.df * jnp.linalg.inv(w.inv_scale)
+
+
+# ---- Matrix normal ---------------------------------------------------------
+
+class MatrixNormal(NamedTuple):
+    """Weights ``W`` (m × d) ~ MN(M, Λ⁻¹, σ² I) in information form:
+    ``eta = Λ M`` (m × d), ``lam = Λ`` (m × m) the row precision over the m
+    input features. The d output columns share Λ, which is what makes
+    the update of a linear-in-features layer conjugate and exact."""
+    eta: jnp.ndarray
+    lam: jnp.ndarray
+
+    @classmethod
+    def from_mean(cls, mean, precision: float) -> MatrixNormal:
+        """Isotropic row precision around ``mean`` (m × d)."""
+        mean = jnp.asarray(mean)
+        lam = precision * jnp.eye(mean.shape[0], dtype=mean.dtype)
+        return cls(lam @ mean, lam)
+
+    @property
+    def mean(self):
+        return jnp.linalg.solve(self.lam, self.eta)
+
+    def __mul__(self, other: MatrixNormal) -> MatrixNormal:
+        return MatrixNormal(self.eta + other.eta, self.lam + other.lam)
+

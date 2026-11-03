@@ -9,7 +9,8 @@ and provides four message-passing operations:
     model.filter(stream)        # predict-update belief over the stream
     model.plan(observations)    # action inference toward a goal/setpoint
 
-`LinearCoupling` factors information across slices.
+`LinearCoupling` factors information across slices. Smoothing, planning and
+coupling are each one `jopa.fg` graph, solved by the same elimination.
 """
 from __future__ import annotations
 
@@ -18,29 +19,16 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
-from .config import (
-    PLAN_OFFSET_PIN_PRECISION,
-    PLAN_VMP_ITERATIONS,
-    POINT_ESTIMATE_COV,
-)
-from .distributions import (
-    Gaussian,
-    Wishart,
-    combine_gaussians,
-    gaussian_mean,
-    gaussian_mean_cov,
-    gaussian_prior,
-    vague_gaussian,
-)
-from .message_passing import (
-    compute_marginals,
-    forward_backward,
-    infer_actions,
-    infer_actions_exact,
-)
-from .nodes.transition import CTCache, CTMeta
+from .distributions import Gaussian, combine_gaussians, gaussian_mean, wishart_mean
+from .fg import Fn, Graph, Normal, Variable
+from .nodes.dynamics import Linear
 from .observations import _as_observation
-from .transitions import KnownPhysics
+
+# `jax.enable_x64` is the context manager from JAX 0.7 on; the last releases for
+# Python 3.10 only ship the experimental one.
+_enable_x64 = getattr(jax, "enable_x64", None)
+if _enable_x64 is None:
+    from jax.experimental import enable_x64 as _enable_x64
 
 
 class LinearCoupling:
@@ -106,23 +94,13 @@ class LinearCoupling:
         return coupling, diagnostics
 
     def fuse(self, b_from: Gaussian, b_to: Gaussian):
-        d_s, d_z = b_from.eta.shape[0], b_to.eta.shape[0]
-        P = self.noise_prec * jnp.eye(d_z)
-        MtP = self.M.T @ P
-        Lam = jnp.block([
-            [b_from.lam + MtP @ self.M, -MtP],
-            [-MtP.T,                     b_to.lam + P],
-        ])
-        eta = jnp.concatenate([
-            b_from.eta - MtP @ self.offset,
-            b_to.eta + P @ self.offset,
-        ])
-        cov = jnp.linalg.inv(Lam)
-        mu = cov @ eta
-        lam_s = jnp.linalg.inv(cov[:d_s, :d_s])
-        lam_z = jnp.linalg.inv(cov[d_s:, d_s:])
-        return (Gaussian(eta=lam_s @ mu[:d_s], lam=lam_s),
-                Gaussian(eta=lam_z @ mu[d_s:], lam=lam_z))
+        s = Variable("s", b_from.eta.shape[0])
+        z = Variable("z", b_to.eta.shape[0])
+        post = Graph([
+            Normal.from_gaussian(s, b_from), Normal.from_gaussian(z, b_to),
+            Normal(z, Fn(lambda v: self.M @ v + self.offset, s), self.noise_prec),
+        ]).infer({"s": jnp.zeros(s.dim), "z": jnp.zeros(z.dim)}, iterations=1)
+        return post.gaussian("s"), post.gaussian("z")
 
 
 @dataclass
@@ -139,49 +117,15 @@ class Block:
         return self.transition.dim
 
 
-def _identity_meta(d):
-    return CTMeta(lambda a: a.reshape(d, d))
-
-
-def _known_plan_cache(tr: KnownPhysics, prior_x: Gaussian):
-    """Build a point-estimate cache for a KnownPhysics block at the current
-    belief. Returns (cache, eff_du) where eff_du = du + 1 (the extra channel
-    carries the affine offset via a pinned-1 control)."""
-    d, du = tr.dim, tr.du
-    A, B, offset = tr.linearize(gaussian_mean(prior_x))
-    A = jnp.asarray(A)
-    B = jnp.asarray(B).reshape(d, du)
-    offset = jnp.asarray(offset).reshape(d, 1)
-    B_aug = jnp.concatenate([B, offset], axis=1)
-    eff_du = du + 1
-
-    df = 100.0
-    q_a = gaussian_prior(d * d, POINT_ESTIMATE_COV, A.ravel())
-    q_b = gaussian_prior(d * eff_du, POINT_ESTIMATE_COV, B_aug.ravel())
-    q_W = Wishart(df=df, inv_scale=df * tr.Q)         # E[W] = Q⁻¹
-    return CTCache(q_a, q_W, _identity_meta(d), q_b), eff_du
-
-
-def _augment_prior_u(prior_u: Gaussian, eff_du: int) -> Gaussian:
-    """Append a tight pinned-1 channel for the constant offset."""
-    du = prior_u.eta.shape[0]
-    eta = jnp.concatenate(
-        [prior_u.eta, jnp.array([PLAN_OFFSET_PIN_PRECISION])])
-    lam = (jnp.zeros((eff_du, eff_du))
-           .at[:du, :du].set(prior_u.lam)
-           .at[-1, -1].set(PLAN_OFFSET_PIN_PRECISION))
-    return Gaussian(eta=eta, lam=lam)
-
-
-def _default_action_prior(d, du, q_b, raw, msgs, start_mean, eff_du=None):
+def _default_action_prior(B, msgs, start_mean):
     """Action prior from start→goal latent shift: var(u_i) = ‖μ_e − μ_s‖² / ‖B_col_i‖²."""
-    mB = gaussian_mean(q_b).reshape(d, eff_du or du)[:, :du]
-    b_col_var = jnp.sum(mB ** 2, axis=0) + 1e-8
-    present = [i for i, o in enumerate(raw) if o is not None]
+    du = B.shape[1]
+    b_col_var = jnp.sum(B ** 2, axis=0) + 1e-8
+    present = [m for m in msgs if m is not None]
     if start_mean is not None and present:
-        mu_s, mu_e = start_mean, gaussian_mean(msgs[present[-1]])
+        mu_s, mu_e = start_mean, gaussian_mean(present[-1])
     elif len(present) >= 2:
-        mu_s, mu_e = gaussian_mean(msgs[present[0]]), gaussian_mean(msgs[present[-1]])
+        mu_s, mu_e = gaussian_mean(present[0]), gaussian_mean(present[-1])
     else:
         return Gaussian(eta=jnp.zeros(du), lam=jnp.diag(b_col_var))
     shift = jnp.maximum(
@@ -240,85 +184,80 @@ class JointModel:
             raise NotImplementedError("plan: multi-controllable planning requires coupling resolution")
         return ctrl[0]
 
-    def plan(self, observations, n_iterations=PLAN_VMP_ITERATIONS,
-             prior_x=None, prior_u=None, method="exact"):
+    def plan(self, observations, prior_x=None, prior_u=None):
         """Infer the action sequence — planning as inference. `observations[block]`
-        is a length-T list of raw observations or `None` (vague). `prior_x` is
-        the carried belief (defaults to N(0, I)). `prior_u` defaults to a
+        is a length-T list of raw observations or `None` (unobserved). `prior_x`
+        is the carried belief (defaults to N(0, I)). `prior_u` defaults to a
         start→goal-shift prior for learned dynamics; supply explicitly for
         KnownPhysics / setpoint regulation.
 
-        ``method="exact"`` (default) computes the exact Gaussian action
-        posterior in one solve (LQG duality) — no iteration, no mean-field.
-        ``method="vmp"`` uses the iterative coordinate-ascent VMP updates
-        (`n_iterations` applies only there).
-
-        Returns the planned actions of shape `(T-1, du)`.
+        The graph holds the states, the actions and the transition at its
+        posterior mean, and is linear-Gaussian, so the action posterior is one
+        elimination sweep (LQG duality). Returns actions of shape `(T-1, du)`.
         """
         b = self._controllable()
         tr = b.transition
         d, du = b.dim, tr.du
-
-        raw = observations[b.name]
-        msgs = [vague_gaussian(d) if o is None else b.observation.message(o) for o in raw]
+        msgs = [None if o is None else b.observation.message(o) for o in observations[b.name]]
+        start_mean = None if prior_x is None else gaussian_mean(prior_x)
         if prior_x is None:
             prior_x = Gaussian(eta=jnp.zeros(d), lam=jnp.eye(d))
-            start_mean = None
-        else:
-            start_mean = gaussian_mean(prior_x)
-
-        def _solve(cache, pu):
-            if method == "exact":
-                return infer_actions_exact(prior_x, msgs, cache, pu)
-            return infer_actions(prior_x, msgs, cache, pu, n_iterations=n_iterations)
-
         if tr.learned:
-            if tr.q_b is None and prior_u is None:
+            if tr.q_b is None:
                 raise ValueError(
                     f"plan: block '{b.name}' has du={du} but q(B) was never learned — "
-                    "include 'control' in the training trajectories so B is learned, "
-                    "or pass prior_u explicitly.")
-            cache = CTCache(tr.q_a, tr.q_W, _identity_meta(d), tr.q_b)
+                    "include 'control' in the training trajectories so B is learned.")
+            model, W = tr.dynamics, wishart_mean(tr.q_W)
             if prior_u is None:
-                prior_u = _default_action_prior(d, du, tr.q_b, raw, msgs, start_mean,
-                                                eff_du=tr.eff_du)
-            if tr.offset:                     # pin the learned-drift channel to 1
-                return _solve(cache, _augment_prior_u(prior_u, tr.eff_du))[:, :du]
-            return _solve(cache, prior_u)
+                prior_u = _default_action_prior(model.B, msgs, start_mean)
+        else:
+            A, B, offset = tr.linearize(gaussian_mean(prior_x))
+            model = Linear(jnp.asarray(A), jnp.asarray(B).reshape(d, du), jnp.asarray(offset))
+            W = jnp.linalg.inv(tr.Q)
+            if prior_u is None:
+                prior_u = Gaussian(eta=jnp.zeros(du), lam=jnp.eye(du) * 1e-2)
 
-        # KnownPhysics: re-linearize at current belief, fold offset into a
-        # pinned-1 control channel.
-        cache, eff_du = _known_plan_cache(tr, prior_x)
-        if prior_u is None:
-            prior_u = Gaussian(
-                eta=jnp.zeros(du),
-                lam=jnp.eye(du) * 1e-2)
-        return _solve(cache, _augment_prior_u(prior_u, eff_du))[:, :du]
+        T = len(msgs)
+        xs = [Variable(f"x{t}", d) for t in range(T)]
+        us = [Variable(f"u{t}", du) for t in range(T - 1)]
+        nodes = [Normal.from_gaussian(xs[0], prior_x)]
+        nodes += [Normal.from_gaussian(x, m) for x, m in zip(xs, msgs, strict=True) if m is not None]
+        for t in range(T - 1):
+            nodes += [Normal.from_gaussian(us[t], prior_u),
+                      Normal(xs[t + 1], model.step((xs[t],), us[t]), W)]
+        order = [v.name for t in range(T - 1) for v in (xs[t], us[t])] + [xs[-1].name]
+        init = {v.name: jnp.zeros(v.dim) for v in xs + us}
+        # float64: transition, goal and action precisions span more than float32 resolves
+        with _enable_x64(True):
+            post = Graph(nodes, order=order).infer(init, iterations=1)
+            return jnp.stack([post.mean[u.name] for u in us]).astype(jnp.float32)
 
     def smooth(self, observations, n_predict=0, controls=None, predict_controls=None):
         """Forward-backward smoothing (+ optional rollout). Returns
-        `{block_name: {"means", "covs", "predictions"}}` per learned block."""
+        `{block_name: {"means", "covs", "predictions"}}` per learned block.
+
+        The sweep covers the observed slices only; the ``n_predict`` tail is
+        the posterior predictive (`ct_predict`) rolled forward from the last
+        smoothed marginal. Appending unobserved slices to the VMP sweep instead
+        would let each one's parameter-uncertainty term pull the observed
+        estimates toward the origin."""
         out = {}
         for b in self.blocks:
             if not b.transition.learned:
                 continue
-            d, tr = b.dim, b.transition
-            cache = CTCache(tr.q_a, tr.q_W, _identity_meta(d), tr.q_b)
-            raw = observations[b.name]
-            msgs = [b.observation.message(o) for o in raw] + [vague_gaussian(d)] * n_predict
-            all_ctrl = None
-            offset = getattr(tr, "offset", False)
-            if controls is not None or offset:
-                base = (list(controls) if controls is not None
-                        else [jnp.zeros(tr.du)] * (len(raw) - 1))
-                pc = predict_controls if predict_controls is not None else [jnp.zeros(tr.du)] * n_predict
-                all_ctrl = [jnp.asarray(u) for u in (base + list(pc))]
-                if offset:
-                    all_ctrl = [tr._augment_u(u) for u in all_ctrl]
-            prior_x = Gaussian(eta=jnp.zeros(d), lam=jnp.eye(d))
-            alphas, betas, _, _ = forward_backward(prior_x, msgs, cache, all_ctrl)
-            marg = compute_marginals(alphas, betas, msgs)
-            means, covs = jax.vmap(gaussian_mean_cov)(marg)
+            tr = b.transition
+            means, covs = tr.smooth([b.observation.message(o) for o in observations[b.name]],
+                                    controls)
+            if n_predict:
+                future = (list(predict_controls) if predict_controls is not None
+                          else [None] * n_predict)
+                belief = Gaussian.from_mean(means[-1], jnp.linalg.inv(covs[-1]))
+                rolled = []
+                for k in range(n_predict):
+                    belief = tr.predict(belief, future[k])
+                    rolled.append(belief)
+                means = jnp.concatenate([means, jnp.stack([g.mean for g in rolled])])
+                covs = jnp.concatenate([covs, jnp.stack([g.cov for g in rolled])])
             preds = ([b.observation.decode(means[t]) for t in range(means.shape[0])]
                      if hasattr(b.observation, "decode") else None)
             out[b.name] = {"means": means, "covs": covs, "predictions": preds}

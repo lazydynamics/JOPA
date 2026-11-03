@@ -28,9 +28,8 @@ asked of it:
 
 Variational EM is available when the observation is `learnable` — the E-step
 smooths, the M-step takes gradient steps on the encoder against those smoothed
-targets (`digits_end_to_end.py`). The Reacher pipeline does **not** use it: the
-sensor is trained first on replay, then frozen, and only `q(A,B,W)` keeps
-learning. Both routes are supported; they are not the same experiment.
+targets (`LearnedVAE`). The alternative is to train the sensor first, freeze
+it, and let only `q(A,B,W)` keep learning. Both routes are supported.
 
 Only which variables are latent changes. Nothing is retrained between
 questions, and three properties follow from that.
@@ -38,9 +37,12 @@ questions, and three properties follow from that.
 **Uncertainty is carried end to end.** The sensor emits a Gaussian whose
 per-dimension precision it sets itself. The dynamics are a posterior `q(A,B,W)` —
 Gaussian over `A` and `B`, Wishart over the process precision — not point
-estimates. The planner reads both. Measured on the pixel Reacher: a sensor that overstates
-its precision by 12× spends 1.9× the actuation and 2.0× the control chatter for
-the same final accuracy, because it acts on its own noise.
+estimates. The filter weighs every observation by its precision; the planner is
+certainty-equivalent, rolling the posterior-mean dynamics forward from the
+filtered mean. The hero animation (`figures/hero.py`) runs the same controller
+with a sensor that overstates its precision by 144× (its noise sd by 12×): the
+filter trusts the sensor's low-noise claim, and the plan spends 1.9× the action
+for the same accuracy.
 
 **Planning is exact inference, not optimization.** Group each time slice as
 `s_t = [x_t; u_t]` and the joint is a Gaussian chain, so the α/β recursions that
@@ -51,50 +53,25 @@ Goals arrive as observations.
 **Learning is continual by construction.** Conjugacy makes today's posterior
 tomorrow's prior. `remember(forget=0.5)` tempers evidence in natural parameters,
 so the model can track a drifting world instead of averaging over its history.
-The deployed dynamics are 75 parameters, refit from a few hundred nearby
-transitions in milliseconds.
 
 ## Relation to JEPA — and what changes for control
 
-The pixel sensor is a VAE, and reconstruction is its largest single loss term —
-pixels are what anchor the pose coordinates to something real. What it borrows
-from JEPA is the *additional* objective: an action-conditioned latent rollout
-that encodes a frame window, rolls the latent forward under the actions actually
-taken, and penalises the error in the latent rather than in pixel space. That is
-the term which makes the latent linearly predictable, which is what the
-conjugate dynamics downstream require. That term carries the same collapse risk
-joint-embedding methods face — a latent can satisfy a prediction objective by
-becoming constant — so it uses the VICReg remedy: a per-dimension variance anchor
-plus an off-diagonal covariance penalty.
+JEPA methods learn an encoder by predicting in latent space; I-JEPA and V-JEPA
+are self-supervised objectives with no goals, actions or control. JOPA is
+goal-conditioned by construction: the goal is an observation, and planning is
+inference over the same graph. The LeWM benchmark makes the relation concrete —
+it keeps LeWM's frozen JEPA encoder and replaces only what sits on top of it.
 
-The architectures differ in what they are for. I-JEPA and V-JEPA are
-self-supervised representation objectives: no goals, no actions, no control.
-Goal-directed planning belongs to the wider world-model programme those methods
-feed into, not to the JEPA objective itself. JOPA is goal-conditioned by
-construction — the goal is an observation, and planning is inference over the
-same graph.
+Two things change when the encoder has to close a loop:
 
-Three further differences follow from having to close a loop rather than feed a
-downstream head:
-
-- **The embedding is a distribution, not a point.** The encoder emits
-  `N(μ(y), Σ(y))` with heteroscedastic precision, calibrated against held-out
-  innovations. Fusing vision with dynamics requires knowing how much to trust
-  the encoder on this frame; a point embedding cannot express that.
-- **The predictor becomes a posterior.** In I-JEPA the predictor serves the
-  pretext task and the encoder is the product; V-JEPA 2's action-conditioned
-  variant does keep a predictor for planning, but as a learned network. Here the
-  predictor used during sensor training is thrown away and replaced by the
-  conjugate `q(A,B,W)` — a distribution over dynamics that plans, filters and
-  keeps learning online.
-- **The latent is structured.** For an articulated arm the state is
-  `[pose(4), motion(2)]`: pose from a single frame, motion from differences of
-  consecutive pose encodings, and the decoder sees pose only, so velocity cannot
-  enter the position channels. A static goal image is `[pose(image), 0, 0]`.
-
-Practical consequences: there is no reward function to design, the deployed
-model is small enough to refit inside the control loop, and the controller
-reports calibrated uncertainty about both the state and its own dynamics.
+- **The predictor becomes a posterior.** A JEPA predictor is a network trained
+  for the pretext task. Here it is replaced by a distribution over dynamics —
+  `q(A,B,W)`, or the actuator's `q(A)` — that plans, filters and keeps learning
+  online by conjugate updates.
+- **The embedding can be a distribution.** JOPA's own sensors emit
+  `N(μ(y), Σ(y))` with heteroscedastic precision, so fusing vision with
+  dynamics knows how much to trust the encoder on this frame; a point embedding
+  cannot express that.
 
 ## The model
 
@@ -138,11 +115,17 @@ the rules have to carry $\mathbb{E}[A M A^\top]$ and the parameter-uncertainty
 contractions you see in the code. Keeping $q(y,x)$ joint is what makes it
 possible to learn dynamics from latents that were themselves inferred.
 
-Everything else here is that node asked a different question. Filtering,
-smoothing and prediction are its forward and backward messages; learning
-$q(A,B,W)$ is its parameter messages; action inference is either a message from
-the same node (`ct_message_u`) or a Gaussian chain assembled from the same
-cached posterior expectations.
+Everything else here is that node asked a different question, and every
+question is one graph for the same engine, `jopa.fg` (Gaussian sum-product by
+variable elimination). Smoothing eliminates the chain whose factors are the
+node's averaged factor (`ct_marginal_yx` with no incoming messages), which
+reproduces its forward and backward messages exactly; learning $q(A,B,W)$ is
+its parameter messages (`ct_moments`, `ct_parameter_messages`) on the pairwise
+marginals of that sweep; filtering and prediction use its posterior predictive
+(`ct_predict`), which averages the transition over $q(A,B,W)$ rather than
+averaging its logarithm, so parameter uncertainty widens a forecast instead of
+shrinking it toward the origin; planning is a graph over the actions with the
+transition at its posterior mean.
 
 The rules themselves are not new. They were derived and integrated into
 [RxInfer](https://rxinfer.com) some time ago; the write-up remains unpublished.
@@ -152,11 +135,14 @@ The rules themselves are not new. They were derived and integrated into
 - **Bayesian inference is the only verb.** Learning, state inference, prediction
   and planning are each `q(·)` over a different subset of the same graph — no
   reward shaping, policy networks, or replay-buffer retraining.
-- **Linear-Gaussian latent dynamics**, either global or refit locally around the
-  current belief. The encoder is the one gradient-trained component.
-- **Planning is exact inference.** The joint over states and actions is Gaussian,
-  so the action posterior is one forward–backward sweep in information form. The
-  iterative VMP planner remains available as `plan(method="vmp")`.
+- **Linear-Gaussian latent dynamics** with a conjugate posterior; learned
+  features where a linear model cannot predict (`NeuralLinear`). The observation
+  model (the VAE's encoder and decoder) and the `NeuralLinear` network are the
+  only gradient-trained components.
+- **Planning is exact inference.** With linear dynamics the joint over states
+  and actions is Gaussian, so the action posterior is one elimination sweep;
+  nonlinear dynamics and actuator limits are relinearized and projected
+  (`jopa.fg`).
 - **Composability.** Adding a modality is appending a `Block`; information flows
   across slices through `LinearCoupling`. `JointModel` knows only blocks and
   messages — not images, proprioception, or actions.
@@ -169,7 +155,6 @@ The rules themselves are not new. They were derived and integrated into
 - de Vries, B. *Active Inference for Physical AI Agents — An Engineering Perspective*, arXiv:2603.20927, 2026.
 - Şenöz, I. et al. *Variational Message Passing and Local Constraint Manipulation in Factor Graphs*, Entropy 23(7), 2021.
 - Assran, M. et al. *Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture*, CVPR 2023.
-- Bardes, A., Ponce, J., LeCun, Y. *VICReg: Variance-Invariance-Covariance Regularization*, ICLR 2022.
 - Watter, M. et al. *Embed to Control*, NeurIPS 2015; Zhang, M. et al. *SOLAR*, ICML 2019.
 
 

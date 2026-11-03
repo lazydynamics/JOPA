@@ -1,0 +1,7 @@
+defaults:
+  - cem_online
+  - _self_
+_target_: lewm_baselines.LaplaceGainCEM
+prior_var: 1.0
+noise_var: 1e-2
+gn_steps: 5
