@@ -3,7 +3,7 @@
 **Joint Observation–Planning Architecture** — one factor graph that learns latent
 dynamics, infers latent state, predicts the future, and plans actions. Every
 *inference* task is message passing on that graph; the sensor and the
-`NeuralLinear` feature map are the only components trained by gradients.
+`NeuralLinear` network are the only components trained by gradients.
 
 [![CI](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml/badge.svg)](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml)
 
@@ -57,10 +57,12 @@ An `Observation` turns data into a Gaussian message, a `Block` pairs it with a
 transition, and `JointModel` answers one of four questions: `learn`, `smooth`,
 `filter`, `plan`.
 
-**Offline.** Train a sensor (and, for `NeuralLinear`, its feature map) by
-gradient descent — the only gradients in the system — and encode the data once. Then fit `q(A,B,W)` by message passing:
-each encoded observation becomes a message, forward–backward smooths the
-chain, and the accumulated messages update the parameter posteriors.
+**Offline.** Train a sensor by gradient descent — with the `NeuralLinear`
+network, the only gradients in the system — and encode the data once. Then fit
+the transition posterior by message passing (`q(A,B,W)` for `LearnedLinear`,
+the matrix-normal last layer for `NeuralLinear`): each encoded observation
+becomes a message, forward–backward smooths the chain, and the accumulated
+messages update the parameter posteriors.
 
 **Online.** Every step is inference on the same graph: the **state** is
 filtered, the **parameters** are updated by conjugate VMP, and the **actions**

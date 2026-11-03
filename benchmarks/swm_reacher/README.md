@@ -19,7 +19,9 @@ action block.
 | LeWM + CEM | 98 | 100 | 100 | 100 | 100 | 99.6 ± 0.9 % | 1.99 s |
 
 Median solve is per replan, for the batch of still-running episodes, with the
-plan synchronized off the GPU. Reruns of identical code differ by a few
+plan synchronized off the GPU. JOPA's time covers encoding, the `q(A)` update
+and the plan; LeWM's is the harness's CEM timer (encoding and the plan), so the
+adaptive LeWM rows exclude their fine-tuning or gain step and are lower bounds. Reruns of identical code differ by a few
 episodes per seed (GPU rounding, amplified by the closed loop): seed 42 of the
 fault row gave 78 and 74, and three full runs of it averaged 77.2–80.4 %. JOPA
 runs the same solver in both settings: it adapts `q(A)` online with the

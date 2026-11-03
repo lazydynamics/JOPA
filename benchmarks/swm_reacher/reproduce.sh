@@ -9,9 +9,11 @@ BENCH="${BENCH:-$HOME/jopa-bench}"
 RUNS="${RUNS:-$BENCH/runs}"
 MODEL="${MODEL:-$RUNS/jopa_nl.pkl}"
 SEEDS="${SEEDS:-42 1 2 3 4}"
-JOPA="solver.model_path=$MODEL plan_config.horizon=3 plan_config.receding_horizon=1 +plan_config.history_len=3"
-LEWM="objective=goal_mse_every plan_config.receding_horizon=1"
-mkdir -p "$RUNS"
+mkdir -p "$RUNS" "$(dirname "$MODEL")"
+RUNS="$(cd "$RUNS" && pwd)"                 # absolute: run_eval.sh changes directory
+MODEL="$(cd "$(dirname "$MODEL")" && pwd)/$(basename "$MODEL")"
+JOPA=("solver.model_path='$MODEL'" plan_config.horizon=3 plan_config.receding_horizon=1 +plan_config.history_len=3)
+LEWM=(objective=goal_mse_every plan_config.receding_horizon=1)
 
 row() {   # row <name> <config> <overrides...>
     local name=$1 config=$2; shift 2
@@ -27,14 +29,14 @@ run() {
                            export STABLEWM_HOME="$BENCH/swm_home" XLA_PYTHON_CLIENT_PREALLOCATE=false
                            python encode.py --out "$RUNS/episodes.npz"
                            python train.py --episodes "$RUNS/episodes.npz" --out "$MODEL" ;;
-        jopa)              row jopa              reacher       solver=jopa_adaptive $JOPA ;;
-        lewm)              row lewm              reacher       $LEWM ;;
-        jopa_fault)        row jopa_fault        reacher_fault solver=jopa_adaptive $JOPA ;;
-        jopa_frozen)       row jopa_frozen       reacher_fault solver=jopa $JOPA ;;
-        lewm_frozen)       row lewm_frozen       reacher_fault $LEWM +plan_config.history_len=3 ;;
-        lewm_finetune)     row lewm_finetune     reacher_fault solver=cem_online $LEWM +plan_config.history_len=3 ;;
-        lewm_gain_adam)    row lewm_gain_adam    reacher_fault solver=cem_gain $LEWM +plan_config.history_len=3 ;;
-        lewm_gain_laplace) row lewm_gain_laplace reacher_fault solver=cem_laplace_gain $LEWM +plan_config.history_len=3 ;;
+        jopa)              row jopa              reacher       solver=jopa_adaptive "${JOPA[@]}" ;;
+        lewm)              row lewm              reacher       "${LEWM[@]}" ;;
+        jopa_fault)        row jopa_fault        reacher_fault solver=jopa_adaptive "${JOPA[@]}" ;;
+        jopa_frozen)       row jopa_frozen       reacher_fault solver=jopa "${JOPA[@]}" ;;
+        lewm_frozen)       row lewm_frozen       reacher_fault "${LEWM[@]}" +plan_config.history_len=3 ;;
+        lewm_finetune)     row lewm_finetune     reacher_fault solver=cem_online "${LEWM[@]}" +plan_config.history_len=3 ;;
+        lewm_gain_adam)    row lewm_gain_adam    reacher_fault solver=cem_gain "${LEWM[@]}" +plan_config.history_len=3 ;;
+        lewm_gain_laplace) row lewm_gain_laplace reacher_fault solver=cem_laplace_gain "${LEWM[@]}" +plan_config.history_len=3 ;;
         *) echo "unknown row $1" >&2; exit 1 ;;
     esac
 }
