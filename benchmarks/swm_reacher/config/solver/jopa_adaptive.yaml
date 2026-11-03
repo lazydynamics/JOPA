@@ -1,0 +1,4 @@
+defaults:
+  - jopa
+  - _self_
+adapt: true

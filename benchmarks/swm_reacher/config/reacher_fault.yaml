@@ -1,0 +1,10 @@
+# Upstream reacher eval with the shoulder actuator wired backwards from the
+# first step (shift.py: commanded torques are multiplied per joint by
+# world.gain before reaching the simulator).
+defaults:
+  - reacher
+  - _self_
+
+world:
+  env_name: shift:ReacherShift-v0
+  gain: [-1.0, 1.0]
