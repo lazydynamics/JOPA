@@ -55,6 +55,8 @@ def main(argv=None):
     if args.disagree:
         b_only = [i for i in range(n) if ok["b"][i] and not ok["a"][i]]
         a_only = [i for i in range(n) if ok["a"][i] and not ok["b"][i]]
+        if not a_only and not b_only:
+            raise SystemExit(f"{args.a_name} and {args.b_name} end every episode alike")
         k = round(args.episodes * len(b_only) / (len(a_only) + len(b_only)))
         ids = b_only[:k] + a_only[:args.episodes - k]
         title = (f"{len(a_only) + len(b_only)} of {n} episodes end differently: {args.b_name} "

@@ -2,8 +2,8 @@
 
 **Joint Observation–Planning Architecture** — one factor graph that learns latent
 dynamics, infers latent state, predicts the future, and plans actions. Every
-*inference* task is message passing on that graph; the pixel encoder is the one
-component trained by gradients.
+*inference* task is message passing on that graph; the sensor and the
+`NeuralLinear` feature map are the only components trained by gradients.
 
 [![CI](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml/badge.svg)](https://github.com/lazydynamics/JOPA/actions/workflows/ci.yml)
 
@@ -57,8 +57,8 @@ An `Observation` turns data into a Gaussian message, a `Block` pairs it with a
 transition, and `JointModel` answers one of four questions: `learn`, `smooth`,
 `filter`, `plan`.
 
-**Offline.** Train a sensor by gradient descent — the only gradients in the
-system — and encode the data once. Then fit `q(A,B,W)` by message passing:
+**Offline.** Train a sensor (and, for `NeuralLinear`, its feature map) by
+gradient descent — the only gradients in the system — and encode the data once. Then fit `q(A,B,W)` by message passing:
 each encoded observation becomes a message, forward–backward smooths the
 chain, and the accumulated messages update the parameter posteriors.
 
@@ -82,7 +82,7 @@ wire the shoulder actuator backwards from the first step.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/lewm_reacher_dark.png">
-    <img src="assets/lewm_reacher_light.png" width="100%" alt="Reversed shoulder: JOPA 78.8%, LeWM + gain (Adam) 70.8%, LeWM fine-tuning 39.6%, LeWM + gain (Laplace) 27.6%, both unadapted models under 7%. Healthy arm: JOPA 96.8%, LeWM 99.6%. Planning: JOPA 0.23 s, LeWM 1.99 s per replan.">
+    <img src="assets/lewm_reacher_light.png" width="100%" alt="Reversed shoulder: JOPA 80.4%, LeWM + gain (Adam) 70.8%, LeWM fine-tuning 39.6%, LeWM + gain (Laplace) 27.6%, both unadapted models under 7%. Healthy arm: JOPA 97.2%, LeWM 99.6%. Planning: JOPA 0.25 s, LeWM 1.99 s per replan.">
   </picture>
 </p>
 
@@ -91,7 +91,7 @@ executes `A·u`, `A ~ N(I, I)`; linearized at `E[A]`, every observed
 transition is linear in `A`, and the node's `:a` and `:W` rules turn each
 replan's transitions into `q(A)` and the noise `q(w)` (`jopa.Actuator`).
 The first update, from 50 transitions, reads
-`A = [[−1.04, −0.02], [−0.02, 1.04]]` with posterior sd ≤ 0.009 (eval seed 42).
+`A = [[−1.03, 0.03], [0.01, 1.04]]` with posterior sd ≤ 0.008 (eval seed 42).
 LeWM, given the same gain on its action input, fits a biased one: Adam ends
 at `(−0.56 … −0.69, 0.78 … 0.84)` across the five seeds.
 
@@ -170,7 +170,7 @@ episode montage come from `benchmarks/swm_reacher` (`report.py`, `montage.py`).
 
 ```bash
 git clone https://github.com/lazydynamics/JOPA.git && cd JOPA
-uv sync --extra viz                                  # library, examples, figures
+uv sync --extra viz --extra test                     # library, examples, figures, tests
 uv run pytest tests -q
 uv run python -m examples.digits_rotating            # ~1 min cold (trains a small VAE), ~5 s warm
 uv run python -m examples.reversed_actuator          # seconds

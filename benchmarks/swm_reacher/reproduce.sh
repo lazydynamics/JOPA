@@ -5,9 +5,11 @@
 #   fault:    jopa_fault  jopa_frozen  lewm_frozen  lewm_finetune  lewm_gain_adam  lewm_gain_laplace
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-RUNS="${RUNS:-$HOME/jopa-bench/runs}"
+BENCH="${BENCH:-$HOME/jopa-bench}"
+RUNS="${RUNS:-$BENCH/runs}"
+MODEL="${MODEL:-$RUNS/jopa_nl.pkl}"
 SEEDS="${SEEDS:-42 1 2 3 4}"
-JOPA="plan_config.horizon=3 plan_config.receding_horizon=1 +plan_config.history_len=3"
+JOPA="solver.model_path=$MODEL plan_config.horizon=3 plan_config.receding_horizon=1 +plan_config.history_len=3"
 LEWM="objective=goal_mse_every plan_config.receding_horizon=1"
 mkdir -p "$RUNS"
 
@@ -21,10 +23,10 @@ row() {   # row <name> <config> <overrides...>
 
 run() {
     case $1 in
-        train)             source ~/jopa-bench/.venv/bin/activate; cd "$HERE"
-                           export STABLEWM_HOME=~/jopa-bench/swm_home XLA_PYTHON_CLIENT_PREALLOCATE=false
+        train)             source "$BENCH/.venv/bin/activate"; cd "$HERE"
+                           export STABLEWM_HOME="$BENCH/swm_home" XLA_PYTHON_CLIENT_PREALLOCATE=false
                            python encode.py --out "$RUNS/episodes.npz"
-                           python train.py --episodes "$RUNS/episodes.npz" --out "${MODEL:-$RUNS/jopa_nl.pkl}" ;;
+                           python train.py --episodes "$RUNS/episodes.npz" --out "$MODEL" ;;
         jopa)              row jopa              reacher       solver=jopa_adaptive $JOPA ;;
         lewm)              row lewm              reacher       $LEWM ;;
         jopa_fault)        row jopa_fault        reacher_fault solver=jopa_adaptive $JOPA ;;

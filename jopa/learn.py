@@ -83,7 +83,7 @@ def fit_neural_linear(trajectories, *, width=512, order=2, horizon=5, steps=20_0
     opt = optax.adamw(optax.cosine_decay_schedule(lr, steps), weight_decay=weight_decay)
 
     @jax.jit
-    def train_step(p, s, k):
+    def train_step(p, s, k, frames, acts):
         idx = jax.random.randint(k, (batch_size,), 0, frames.shape[0])
         val, g = jax.value_and_grad(loss)(p, frames[idx], acts[idx])
         upd, s = opt.update(g, s, p)
@@ -92,7 +92,7 @@ def fit_neural_linear(trajectories, *, width=512, order=2, horizon=5, steps=20_0
     state = opt.init(params)
     for i in range(steps):
         key, k = jax.random.split(key)
-        params, state, val = train_step(params, state, k)
+        params, state, val = train_step(params, state, k, frames, acts)
         if verbose and i % 5000 == 0:
             print(f"step {i} rollout loss {float(val):.5f}", flush=True)
 
@@ -114,7 +114,8 @@ def save_neural_linear(path, model: NeuralLinear, **extra):
 
 
 def load_neural_linear(path):
-    """``(model, extra)`` from `save_neural_linear`'s file."""
+    """``(model, extra)`` from `save_neural_linear`'s file. The file is a
+    pickle: load only checkpoints you wrote."""
     with open(path, "rb") as f:
         state = pickle.load(f)
     params = jax.tree.map(jnp.asarray, state.pop("params"))

@@ -4,7 +4,7 @@ Every number drawn is produced by the library — conjugate system
 identification, smoothing and prediction, and action inference on the same
 factor graph. Nothing is scripted.
 
-    uv run python figures/hero.py --out assets/hero.gif
+    uv run --extra viz python figures/hero.py --out assets/hero.gif
 """
 from __future__ import annotations
 

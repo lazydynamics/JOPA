@@ -99,6 +99,7 @@ class JopaSolver(HarnessSolver):
         act = self.actuator if self.adapt else Actuator.nominal(self.n_actuators)
         u, energy = self._plan(self.model, act, pad(prev), pad(cur), pad(goal),
                                jax.random.split(k, self.n_envs))
+        u, energy = jax.block_until_ready((u, energy))
         print(f"JOPA solve time: {time.time() - t0:.4f} seconds")
         a = np.asarray(u, np.float64)[:n] / self.act_sd     # unit conversions in float64
         return {"actions": torch.tensor(a, dtype=torch.float32),

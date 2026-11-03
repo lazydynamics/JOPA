@@ -8,17 +8,20 @@ action block.
 | | 42 | 1 | 2 | 3 | 4 | mean ± std | median solve |
 |---|---|---|---|---|---|---|---|
 | **shoulder wired backwards** | | | | | | | |
-| JOPA | 72 | 72 | 80 | 86 | 84 | **78.8 ± 6.6 %** | 0.23 s |
+| JOPA | 78 | 72 | 86 | 82 | 84 | **80.4 ± 5.5 %** | 0.25 s |
 | LeWM + gain, Adam | 66 | 70 | 80 | 64 | 74 | 70.8 ± 6.4 % | 10.75 s |
 | LeWM, online fine-tuning | 32 | 34 | 40 | 50 | 42 | 39.6 ± 7.1 % | 14.86 s |
 | LeWM + gain, Laplace | 16 | 26 | 30 | 28 | 38 | 27.6 ± 7.9 % | 16.19 s |
-| JOPA, no adaptation | 6 | 12 | 0 | 6 | 6 | 6.0 ± 4.2 % | 0.04 s |
+| JOPA, no adaptation | 2 | 12 | 0 | 6 | 6 | 5.2 ± 4.6 % | 0.07 s |
 | LeWM, no adaptation | 2 | 8 | 0 | 4 | 4 | 3.6 ± 3.0 % | 16.52 s |
 | **healthy arm** | | | | | | | |
-| JOPA | 96 | 96 | 100 | 98 | 94 | 96.8 ± 2.3 % | 0.23 s |
+| JOPA | 96 | 96 | 100 | 98 | 96 | 97.2 ± 1.8 % | 0.25 s |
 | LeWM + CEM | 98 | 100 | 100 | 100 | 100 | 99.6 ± 0.9 % | 1.99 s |
 
-Median solve is per replan, for the batch of still-running episodes. JOPA
+Median solve is per replan, for the batch of still-running episodes, with the
+plan synchronized off the GPU. Reruns of identical code differ by a few
+episodes per seed (GPU rounding, amplified by the closed loop): seed 42 of the
+fault row gave 78 and 74, and three full runs of it averaged 77.2–80.4 %. JOPA
 runs the same solver in both settings: it adapts `q(A)` online with the
 ContinuousTransition rules (`jopa.Actuator`) and plans through `E[A]`.
 

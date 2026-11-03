@@ -378,3 +378,18 @@ The amendment-8 run of the same model gave 80.8 %; the rename compiles a
 different GPU program and the closed loop amplifies rounding, as in the
 cleanup reruns above. Against LeWM + gain (Adam) the fault row is ahead on
 four seeds and tied on one (+8.0 points mean paired gap).
+
+# Review fixes — reruns
+
+The solver's timer now waits for the plan (`jax.block_until_ready`); before,
+it stopped at dispatch and missed ~20 ms per replan. Every JOPA row was rerun
+with the PR code; LeWM rows are the registered logs.
+
+| eval seeds | 42 | 1 | 2 | 3 | 4 | mean ± std | median solve |
+|---|---|---|---|---|---|---|---|
+| fault, JOPA (`jopa_fault`) | 78 | 72 | 86 | 82 | 84 | 80.4 ± 5.5 % | 0.25 s |
+| healthy, JOPA (`jopa`) | 96 | 96 | 100 | 98 | 96 | 97.2 ± 1.8 % | 0.25 s |
+| fault, no adaptation (`jopa_frozen`) | 2 | 12 | 0 | 6 | 6 | 5.2 ± 4.6 % | 0.07 s |
+
+A second run of fault seed 42 on the same code gave 74. Against LeWM + gain
+(Adam) the fault row is ahead on all five seeds (+9.6 points mean paired gap).
